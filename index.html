@@ -262,6 +262,9 @@ function listenFirebase(){
     if(!snap.exists) return;
     const d = snap.data();
     const photos = await loadPhotos();
+    // Preserve any photos already in local state (avoids flicker when snapshot fires before photo subcollection saves)
+    const localPhotos = {};
+    (S.data?.locations||[]).forEach(l=>l.employees.forEach(e=>{ if(e.photo) localPhotos[e.id]=e.photo; }));
     S.data = {
       categories: d.categories||[],
       tasks:      d.tasks||[],
@@ -269,7 +272,7 @@ function listenFirebase(){
       leaves:     d.leaves||[],
       locations: (d.locations||[]).map(l=>({
         ...l,
-        employees: (l.employees||[]).map(e=>({...e, photo: photos[e.id]||e.photo||''}))
+        employees: (l.employees||[]).map(e=>({...e, photo: photos[e.id]||localPhotos[e.id]||e.photo||''}))
       }))
     };
     if(S.authUser){
@@ -522,9 +525,16 @@ async function doAddEmp(){
 }
 async function doEditEmp(){
   if(!S.empForm.name||!S.empForm.role)return toast$('يرجى ملء الاسم والوظيفة','error');
-  updEmp(curLoc().id,S.selEmpId,e=>({...e,name:S.empForm.name,role:S.empForm.role,phone:S.empForm.phone,shift:S.empForm.shift,salary:Number(S.empForm.salary)||0,...(S.empPhoto!==null?{photo:S.empPhoto}:{})}));
+  const photoToSave = S.empPhoto; // capture before clearing
+  const lid=curLoc().id, eid=S.selEmpId;
+  // Update state + photo immediately so UI shows it right away
+  S.data.locations=S.data.locations.map(l=>l.id===lid?{...l,employees:l.employees.map(e=>e.id===eid?{...e,name:S.empForm.name,role:S.empForm.role,phone:S.empForm.phone,shift:S.empForm.shift,salary:Number(S.empForm.salary)||0,...(photoToSave!==null?{photo:photoToSave}:{})}:e)}:l);
   S.empPhoto=null;
-  toast$('تم تحديث بيانات الموظف ✅'); S.view='employeeDetail'; render();
+  S.view='employeeDetail';
+  render(); // render immediately so photo is visible
+  toast$('جاري الحفظ...','info');
+  await saveData();
+  toast$('تم تحديث بيانات الموظف ✅');
 }
 function handlePhotoUpload(input){
   const file=input.files[0]; if(!file)return;
