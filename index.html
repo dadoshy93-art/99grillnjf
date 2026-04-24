@@ -211,20 +211,21 @@ async function syncToFirebase(){
       updatedAt: new Date().toISOString()
     };
     await db.collection('restaurant').doc('main').set(dataToSave);
-    // Save photos separately
-    const batch = db.batch();
+    // Save photos separately — one by one to avoid batch limits
+    const photoSavePromises = [];
     S.data.locations.forEach(l=>l.employees.forEach(e=>{
       if(e.photo){
-        batch.set(
-          db.collection('restaurant').doc('photos').collection('emps').doc(e.id),
-          {photo: e.photo, updatedAt: new Date().toISOString()}
+        photoSavePromises.push(
+          db.collection('restaurant').doc('photos').collection('emps').doc(e.id)
+            .set({photo: e.photo, updatedAt: new Date().toISOString()})
+            .catch(err=>console.warn('photo save err for',e.id,err))
         );
       }
     }));
-    await batch.commit();
+    if(photoSavePromises.length) await Promise.allSettled(photoSavePromises);
   }catch(err){
     console.warn('sync err',err);
-    toast$('خطأ في الحفظ','error');
+    toast$('خطأ في الحفظ: '+err.message,'error');
   }
 }
 
@@ -233,8 +234,27 @@ async function loadPhotos(){
     const snap = await db.collection('restaurant').doc('photos').collection('emps').get();
     const photos = {};
     snap.forEach(doc=>{ photos[doc.id] = doc.data().photo||''; });
+    console.log(`📷 Loaded ${Object.keys(photos).length} photos`);
     return photos;
-  }catch(e){ return {}; }
+  }catch(e){
+    console.warn('loadPhotos err',e);
+    return {};
+  }
+}
+
+async function reloadPhotosNow(){
+  toast$('جاري إعادة تحميل الصور...','info');
+  try{
+    const photos = await loadPhotos();
+    S.data.locations = S.data.locations.map(l=>({
+      ...l,
+      employees: l.employees.map(e=>({...e, photo: photos[e.id]||e.photo||''}))
+    }));
+    toast$(`✅ تم تحميل ${Object.keys(photos).length} صورة`);
+    render();
+  }catch(e){
+    toast$('خطأ في تحميل الصور','error');
+  }
 }
 
 function listenFirebase(){
@@ -271,7 +291,7 @@ async function loadOrInit(){
         tasks:      d.tasks||[],
         managers:   d.managers||[],
         leaves:     d.leaves||[],
-        locations: (d.locations||d.locationsLight&&[]||[]).map(l=>({
+        locations: (d.locations||[]).map(l=>({
           ...l,
           employees: (l.employees||[]).map(e=>({...e, photo: photos[e.id]||e.photo||''}))
         }))
@@ -514,21 +534,27 @@ function handlePhotoUpload(input){
   reader.onload=e=>{
     const img=new Image();
     img.onload=()=>{
-      // Compress to max 200x200 and quality 0.6
-      const MAX=200;
+      // Compress to max 150x150 at quality 0.5 to stay well under Firestore limits
+      const MAX=150;
       let w=img.width, h=img.height;
       if(w>h){ if(w>MAX){h=Math.round(h*MAX/w);w=MAX;} }
       else { if(h>MAX){w=Math.round(w*MAX/h);h=MAX;} }
       const canvas=document.createElement('canvas');
       canvas.width=w; canvas.height=h;
       canvas.getContext('2d').drawImage(img,0,0,w,h);
-      // Compress as JPEG quality 0.6
-      const compressed=canvas.toDataURL('image/jpeg',0.6);
-      const kb=Math.round(compressed.length*0.75/1024);
+      // Try quality 0.5 first, then lower if still too big
+      let compressed=canvas.toDataURL('image/jpeg',0.5);
+      let kb=Math.round(compressed.length*0.75/1024);
+      // If over 80KB, lower quality further
+      if(kb>80){
+        compressed=canvas.toDataURL('image/jpeg',0.3);
+        kb=Math.round(compressed.length*0.75/1024);
+      }
       toast$(`تم ضغط الصورة: ${kb}KB ✅`);
       S.empPhoto=compressed;
       rePhotoPreview();
     };
+    img.onerror=()=>toast$('خطأ في قراءة الصورة','error');
     img.src=e.target.result;
   };
   reader.readAsDataURL(file);
@@ -605,6 +631,81 @@ async function doToggleTask(id){
 async function doDeleteTask(id){
   S.data.tasks=S.data.tasks.filter(t=>t.id!==id);
   await saveData(); toast$('تم حذف المهمة'); render();
+}
+
+// ══════════════════ BACKUP & RESTORE ══════════════════
+async function doBackup(){
+  if(!S.data) return toast$('لا توجد بيانات للنسخ الاحتياطي','error');
+  try{
+    // Include photos in backup
+    const photos = await loadPhotos();
+    const backupData = {
+      version: 2,
+      backupDate: new Date().toISOString(),
+      restaurantName: '99 Grill NJF',
+      data: {
+        ...S.data,
+        locations: S.data.locations.map(l=>({
+          ...l,
+          employees: l.employees.map(e=>({
+            ...e,
+            photo: photos[e.id] || e.photo || ''
+          }))
+        }))
+      }
+    };
+    const json = JSON.stringify(backupData, null, 2);
+    const blob = new Blob([json], {type:'application/json'});
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    const dateStr = new Date().toISOString().split('T')[0];
+    a.href     = url;
+    a.download = `99grill-backup-${dateStr}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast$('✅ تم تنزيل النسخة الاحتياطية');
+  }catch(e){
+    console.error('backup err',e);
+    toast$('خطأ في النسخ الاحتياطي: '+e.message,'error');
+  }
+}
+
+function doRestorePrompt(){
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.json';
+  input.onchange = async evt => {
+    const file = evt.target.files[0]; if(!file) return;
+    const reader = new FileReader();
+    reader.onload = async e => {
+      try{
+        const parsed = JSON.parse(e.target.result);
+        // Support both direct data and versioned backup format
+        const d = parsed.version ? parsed.data : parsed;
+        if(!d.locations || !d.categories){
+          return toast$('ملف غير صالح: يجب أن يحتوي على locations و categories','error');
+        }
+        const empCount = (d.locations||[]).reduce((s,l)=>s+(l.employees||[]).length,0);
+        if(!confirm(`هل تريد استعادة النسخة الاحتياطية؟\n\nالمحتوى:\n• ${(d.locations||[]).length} قسم\n• ${empCount} موظف\n• ${(d.categories||[]).length} صنف تقييم\n• ${(d.tasks||[]).length} مهمة\n\n⚠️ سيتم استبدال جميع البيانات الحالية!`)) return;
+        toast$('جاري الاستعادة...','info');
+        S.data = {
+          categories: d.categories||[],
+          tasks:      d.tasks||[],
+          managers:   d.managers||[],
+          leaves:     d.leaves||[],
+          locations:  (d.locations||[]).map(l=>({...l, employees:(l.employees||[])}))
+        };
+        await syncToFirebase();
+        toast$('✅ تمت استعادة البيانات بنجاح');
+        render();
+      }catch(err){
+        console.error('restore err',err);
+        toast$('خطأ في قراءة الملف: '+err.message,'error');
+      }
+    };
+    reader.readAsText(file);
+  };
+  input.click();
 }
 
 // ══════════════════ PICKERS ══════════════════
@@ -833,6 +934,7 @@ function renderHome(){
         </div>
         <div style="display:flex;gap:8px">
           ${S.isSuperAdmin?`<button onclick="S.managerView=true;render()" style="background:#CC000022;color:#CC0000;padding:6px 12px;border-radius:10px;font-size:12px;font-weight:700;font-family:inherit">👑 المدراء</button>`:''}
+          ${S.isSuperAdmin?`<button onclick="doBackup()" title="نسخة احتياطية" style="background:#06D6A022;color:#06D6A0;padding:6px 10px;border-radius:10px;font-size:14px;font-family:inherit">💾</button>`:''}
           <button onclick="doLogout()" style="background:#33333399;color:#CC0000;padding:6px 12px;border-radius:10px;font-size:12px;font-weight:700;font-family:inherit">خروج</button>
         </div>
       </div>
@@ -983,11 +1085,29 @@ function renderManagers(){
           🔄 استيراد المدراء من Firebase
         </button>
         <div style="font-size:11px;color:#555;text-align:center;margin-top:-4px">إذا المدراء موجودون في Firebase لكن ما يظهرون هنا</div>
+        <button onclick="reloadPhotosNow()" style="width:100%;padding:11px;background:#8338EC22;border:1px solid #8338EC44;border-radius:12px;color:#8338EC;font-size:13px;font-weight:700;font-family:inherit">
+          📷 إعادة تحميل صور الموظفين
+        </button>
+        <div style="font-size:11px;color:#555;text-align:center;margin-top:-4px">اضغط إذا الصور لا تظهر للموظفين</div>
         <button onclick="fixAllIds()" style="width:100%;padding:11px;background:#FF9F1C22;border:1px solid #FF9F1C44;border-radius:12px;color:#FF9F1C;font-size:13px;font-weight:700;font-family:inherit">
           🛠️ إصلاح مشكلة فتح الموظف الخاطئ
         </button>
         <div style="font-size:11px;color:#555;text-align:center;margin-top:-4px">اضغط إذا الضغط على موظف يفتح موظف آخر</div>
       </div>
+    </div>
+    <!-- Backup & Restore -->
+    <div style="margin-top:16px;background:#1A1A24;border-radius:16px;padding:14px;border:1px solid #06D6A033">
+      <div style="font-size:12px;color:#06D6A0;font-weight:700;margin-bottom:4px">💾 النسخ الاحتياطي والاستعادة</div>
+      <div style="font-size:11px;color:#666;margin-bottom:10px">احفظ جميع البيانات (الموظفين، الرواتب، التقييمات، الصور) في ملف JSON على جهازك</div>
+      <div style="display:flex;gap:8px">
+        <button onclick="doBackup()" style="flex:1;padding:13px 0;background:linear-gradient(135deg,#06D6A022,#06D6A011);border:1px solid #06D6A044;border-radius:12px;color:#06D6A0;font-size:13px;font-weight:700;font-family:inherit;display:flex;align-items:center;justify-content:center;gap:6px">
+          ⬇️ تنزيل نسخة احتياطية
+        </button>
+        <button onclick="doRestorePrompt()" style="flex:1;padding:13px 0;background:linear-gradient(135deg,#FF9F1C22,#FF9F1C11);border:1px solid #FF9F1C44;border-radius:12px;color:#FF9F1C;font-size:13px;font-weight:700;font-family:inherit;display:flex;align-items:center;justify-content:center;gap:6px">
+          ⬆️ استعادة من ملف
+        </button>
+      </div>
+      <div style="font-size:10px;color:#444;margin-top:8px;text-align:center">⚠️ الاستعادة ستستبدل جميع البيانات الحالية</div>
     </div>
   </div>`;
 }
