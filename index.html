@@ -95,7 +95,7 @@ auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL);
 
 // ══════════════════ CONSTANTS ══════════════════
 const SUPER_ADMIN_EMAIL = 'admin@99grillnjf.com';
-const TODAY = new Date().toISOString().split('T')[0];
+const TODAY = (()=>{const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;})();
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,6);
 
 // Is employee new (joined within last 30 days)
@@ -197,6 +197,10 @@ const S = {
   // leaves
   showLeaveCalendar: false,
   leaveCalDate: TODAY,
+  showLeaveHistory: false,
+  showMoveEmpModal: false,
+  rankSortBy: 'overall',
+  showCalReset: false,
   // salary access
   canSeeSalary: false, // set from manager record
 };
@@ -610,6 +614,30 @@ async function doDeleteEmp(){
   S.data.locations=S.data.locations.map(loc=>loc.id===l.id?{...loc,employees:loc.employees.filter(e=>e.id!==S.selEmpId)}:loc);
   await saveData(); toast$('تم حذف الموظف'); S.view='location'; render();
 }
+
+// Move employee to another location (preserves all ratings, leaves, photo, salary, etc)
+async function doMoveEmployee(targetLocId){
+  const fromLoc=curLoc();
+  const emp=curEmp();
+  if(!fromLoc||!emp) return;
+  if(targetLocId===fromLoc.id){S.showMoveEmpModal=false;return toast$('الموظف موجود بالفعل في هذا القسم','error');}
+  const targetLoc=S.data.locations.find(l=>l.id===targetLocId);
+  if(!targetLoc) return toast$('القسم غير موجود','error');
+  if(!confirm(`نقل ${emp.name} من "${fromLoc.name}" إلى "${targetLoc.name}"؟\n\nسيتم نقل جميع البيانات (التقييمات، الصورة، الراتب).`)) return;
+  // Remove from current loc, add to target loc with same employee object
+  S.data.locations=S.data.locations.map(loc=>{
+    if(loc.id===fromLoc.id) return {...loc,employees:loc.employees.filter(e=>e.id!==emp.id)};
+    if(loc.id===targetLocId) return {...loc,employees:[...loc.employees,emp]};
+    return loc;
+  });
+  // Update leaves locName/locColor references for this employee
+  S.data.leaves=(S.data.leaves||[]).map(l=>l.empId===emp.id?{...l,locName:targetLoc.name,locColor:targetLoc.color}:l);
+  S.selLocId=targetLocId;
+  S.showMoveEmpModal=false;
+  await saveData();
+  toast$(`✅ تم نقل ${emp.name} إلى ${targetLoc.name}`);
+  render();
+}
 async function doAddRating(){
   const cats=S.data.categories;
   if(!cats.some(c=>(S.ratingScores[c.id]||0)>0))return toast$('قيّم صنفاً واحداً على الأقل','error');
@@ -849,9 +877,9 @@ function renderLeaveCalendar(empId, empName, locName, locColor){
         </div>
         <!-- Month nav -->
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;background:#0F0F14;border-radius:12px;padding:8px 14px">
-          <button onclick="S.leaveCalDate=new Date(${y},${m-2},1).toISOString().split('T')[0];render()" style="background:#333;color:#ccc;width:34px;height:34px;border-radius:10px;font-size:20px;line-height:1">‹</button>
+          <button onclick="S.leaveCalDate=\`${m===1?y-1:y}-${String(m===1?12:m-1).padStart(2,'0')}-01\`;render()" style="background:#333;color:#ccc;width:34px;height:34px;border-radius:10px;font-size:20px;line-height:1">‹</button>
           <div style="font-weight:800;font-size:16px">${AR_MONTHS[m-1]} ${y}</div>
-          <button onclick="S.leaveCalDate=new Date(${y},${m},1).toISOString().split('T')[0];render()" style="background:#333;color:#ccc;width:34px;height:34px;border-radius:10px;font-size:20px;line-height:1">›</button>
+          <button onclick="S.leaveCalDate=\`${m===12?y+1:y}-${String(m===12?1:m+1).padStart(2,'0')}-01\`;render()" style="background:#333;color:#ccc;width:34px;height:34px;border-radius:10px;font-size:20px;line-height:1">›</button>
         </div>
         <!-- Day labels -->
         <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-bottom:6px">
@@ -874,20 +902,24 @@ function renderLeaveCalendar(empId, empName, locName, locColor){
             </button>`;
           }).join('')}
         </div>
-        <!-- Existing leaves -->
-        <div style="font-size:12px;color:#888;font-weight:600;margin-bottom:8px">الإجازات المسجّلة (${empLeaves.length})</div>
-        ${empLeaves.length>0?`
-          <div style="display:flex;flex-direction:column;gap:6px">
-            ${(S.data.leaves||[]).filter(l=>l.empId===empId).sort((a,b)=>a.date.localeCompare(b.date)).map(l=>`
-              <div style="background:#CC000011;border-radius:10px;padding:8px 12px;border:1px solid #CC000033;display:flex;align-items:center;gap:10px">
-                <span style="font-size:18px">🏖️</span>
-                <div style="flex:1">
-                  <div style="font-size:13px;font-weight:700">${fmtLeaveDate(l.date)}</div>
-                  <div style="font-size:11px;color:#666;margin-top:2px">${l.date}</div>
-                </div>
-                <button onclick="doDeleteLeave('${l.id}')" style="background:#CC000022;color:#CC0000;width:28px;height:28px;border-radius:8px;font-size:12px">🗑</button>
-              </div>`).join('')}
-          </div>`:`<div style="text-align:center;color:#555;font-size:13px;padding:10px 0">لا توجد إجازات مسجّلة</div>`}
+        <!-- Upcoming & today's leaves only -->
+        ${(()=>{
+          const allEmpLeaves=(S.data.leaves||[]).filter(l=>l.empId===empId).sort((a,b)=>a.date.localeCompare(b.date));
+          const upcoming=allEmpLeaves.filter(l=>l.date>=TODAY);
+          return `<div style="font-size:12px;color:#888;font-weight:700;margin-bottom:8px">الإجازات القادمة (${upcoming.length})</div>
+          ${upcoming.length>0?`
+            <div style="display:flex;flex-direction:column;gap:6px">
+              ${upcoming.map(l=>{const isToday=l.date===TODAY;return`
+                <div style="background:${isToday?'#FF9F1C11':'#CC000011'};border-radius:10px;padding:8px 12px;border:1px solid ${isToday?'#FF9F1C33':'#CC000033'};display:flex;align-items:center;gap:10px">
+                  <span style="font-size:18px">${isToday?'🏖️':'📅'}</span>
+                  <div style="flex:1">
+                    <div style="font-size:13px;font-weight:700">${fmtLeaveDate(l.date)}${isToday?' <span style="color:#FF9F1C;font-size:10px;font-weight:800">● اليوم</span>':''}</div>
+                    <div style="font-size:11px;color:#666;margin-top:2px">${l.date}${l.addedByName?` · بواسطة ${l.addedByName}`:''}</div>
+                  </div>
+                  <button onclick="doDeleteLeave('${l.id}')" style="background:#CC000022;color:#CC0000;width:28px;height:28px;border-radius:8px;font-size:12px">🗑</button>
+                </div>`;}).join('')}
+            </div>`:`<div style="text-align:center;color:#555;font-size:13px;padding:10px 0">لا توجد إجازات قادمة</div>`}`;
+        })()}
       </div>
     </div>`;
 }
@@ -1021,31 +1053,30 @@ function renderHome(){
         </div>
       </div>
       <!-- Locations -->
-      <!-- ── Leaves Section ── -->
+      <!-- ── Leaves Section (only upcoming/today, past hidden) ── -->
       ${(()=>{
         const todayLeaves=(S.data.leaves||[]).filter(l=>l.date===TODAY);
-        const allLeaves=[...(S.data.leaves||[])].sort((a,b)=>a.date.localeCompare(b.date));
-        if(!allLeaves.length) return '';
+        const upcomingLeaves=[...(S.data.leaves||[])].filter(l=>l.date>=TODAY).sort((a,b)=>a.date.localeCompare(b.date));
+        if(!upcomingLeaves.length) return '';
         return `
         <div style="margin-bottom:24px">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-            <div style="font-size:15px;font-weight:700">🏖️ الإجازات</div>
+            <div style="font-size:15px;font-weight:700">🏖️ الإجازات القادمة</div>
             ${todayLeaves.length>0?`<span style="background:#FF9F1C22;color:#FF9F1C;border-radius:8px;padding:3px 10px;font-size:11px;font-weight:700">${todayLeaves.length} اليوم</span>`:''}
           </div>
           <div style="display:flex;flex-direction:column;gap:8px">
-            ${allLeaves.map(l=>{
+            ${upcomingLeaves.map(l=>{
               const d=new Date(l.date+'T00:00:00');
               const isToday=l.date===TODAY;
-              const isPast=l.date<TODAY;
-              return `<div style="background:var(--dark2);border-radius:14px;padding:12px 14px;border:1px solid ${isToday?'#FF9F1C44':isPast?'#33333388':'#FF9F1C22'};display:flex;align-items:center;gap:12px;opacity:${isPast?0.55:1}">
+              return `<div style="background:var(--dark2);border-radius:14px;padding:12px 14px;border:1px solid ${isToday?'#FF9F1C44':'#FF9F1C22'};display:flex;align-items:center;gap:12px">
                 <div style="width:46px;height:46px;border-radius:12px;background:${isToday?'#FF9F1C33':'#33333344'};display:flex;flex-direction:column;align-items:center;justify-content:center;flex-shrink:0;border:1px solid ${isToday?'#FF9F1C44':'#444'}">
                   <div style="font-size:18px;font-weight:800;color:${isToday?'#FF9F1C':'#888'};line-height:1">${d.getDate()}</div>
                   <div style="font-size:9px;color:${isToday?'#FF9F1C':'#666'};margin-top:1px">${AR_MONTHS[d.getMonth()]}</div>
                 </div>
-                <div style="flex:1">
+                <div style="flex:1;min-width:0">
                   <div style="font-weight:700;font-size:14px">${l.empName}</div>
-                  <div style="font-size:11px;color:#888;margin-top:2px">${AR_DAYS[d.getDay()]} ${d.getDate()} ${AR_MONTHS[d.getMonth()]}</div>
-                  <div style="font-size:11px;color:#666;margin-top:1px">${l.locName}</div>
+                  <div style="font-size:11px;color:#888;margin-top:2px">${AR_DAYS[d.getDay()]} ${d.getDate()} ${AR_MONTHS[d.getMonth()]} · ${l.locName}</div>
+                  ${l.addedByName?`<div style="font-size:10px;color:#555;margin-top:2px">📝 ${l.addedByName}</div>`:''}
                 </div>
                 ${isToday?`<span style="background:#FF9F1C22;color:#FF9F1C;border-radius:8px;padding:3px 10px;font-size:11px;font-weight:700">اليوم</span>`:''}
                 <button onclick="doDeleteLeave('${l.id}')" style="background:#CC000011;color:#CC0000;width:28px;height:28px;border-radius:8px;font-size:12px;flex-shrink:0">🗑</button>
@@ -1190,7 +1221,11 @@ function renderManageCats(){
 
 function renderAllRatings(){
   const cats=S.data.categories,emps=allEmps();
-  const ranked=[...emps].filter(e=>e.ratings.length>0).sort((a,b)=>overallAvg(b.ratings)-overallAvg(a.ratings));
+  const sortBy=S.rankSortBy||'overall';
+  const getSortVal=e=>sortBy==='overall'?overallAvg(e.ratings):(catAvg(e.ratings,sortBy)||0);
+  const ranked=[...emps].filter(e=>e.ratings.length>0&&(sortBy==='overall'||catAvg(e.ratings,sortBy)>0)).sort((a,b)=>getSortVal(b)-getSortVal(a));
+  const sortLabel=sortBy==='overall'?'الترتيب العام':(()=>{const c=cats.find(c=>c.id===sortBy);return c?`${c.icon} ${c.label}`:'';})();
+  const sortColor=sortBy==='overall'?'#FFD700':(cats.find(c=>c.id===sortBy)?.color||'#FFD700');
   return`<div class="page">
     <div class="row" style="margin-bottom:20px">
       <button class="back-btn" onclick="S.view='home';render()">←</button>
@@ -1238,16 +1273,33 @@ function renderAllRatings(){
           </div>`:''}
         </div>`;}).join('')}
       </div>`).join('')}`:`
+      <!-- Sort selector -->
+      <div style="background:var(--dark2);border-radius:14px;padding:10px;border:1px solid var(--border);margin-bottom:14px">
+        <div style="font-size:11px;color:#888;font-weight:700;margin-bottom:8px;padding:0 4px">⚖️ ترتيب حسب:</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button onclick="S.rankSortBy='overall';render()" style="padding:7px 14px;background:${sortBy==='overall'?'#FFD700':'var(--dark3)'};color:${sortBy==='overall'?'#000':'#888'};border-radius:10px;font-size:12px;font-weight:800;font-family:inherit;border:1px solid ${sortBy==='overall'?'#FFD700':'#333'}">🏆 العام</button>
+          ${cats.map(c=>`<button onclick="S.rankSortBy='${c.id}';render()" style="padding:7px 12px;background:${sortBy===c.id?c.color:'var(--dark3)'};color:${sortBy===c.id?'#fff':'#888'};border-radius:10px;font-size:12px;font-weight:700;font-family:inherit;border:1px solid ${sortBy===c.id?c.color:'#333'}">${c.icon} ${c.label}</button>`).join('')}
+        </div>
+      </div>
+      <!-- Current sort indicator -->
+      <div style="background:${sortColor}11;border:1px solid ${sortColor}33;border-radius:10px;padding:8px 12px;margin-bottom:12px;display:flex;align-items:center;gap:8px">
+        <span style="font-size:14px">📊</span>
+        <span style="font-size:12px;color:${sortColor};font-weight:700">الترتيب الحالي: ${sortLabel}</span>
+      </div>
       <div style="display:flex;flex-direction:column;gap:10px">
-        ${ranked.length===0?'<div style="text-align:center;color:#555;padding:40px 0">لا توجد تقييمات بعد</div>':''}
-        ${ranked.map((emp,i)=>{const oa=overallAvg(emp.ratings),medals=['🥇','🥈','🥉'],bcs=['#FFD70044','#C0C0C044','#CD7F3244'];return`<div class="card" onclick="S.prevView='allRatings';S.selLocId='${emp.locId}';S.selEmpId='${emp.id}';S.ratingScores={};S.ratingNote='';S.empDetailTab='overview';S.view='employeeDetail';render()" style="cursor:pointer;border:1px solid ${i<3?bcs[i]:'#333'}">
+        ${ranked.length===0?`<div style="text-align:center;color:#555;padding:40px 0">${sortBy==='overall'?'لا توجد تقييمات بعد':'لا توجد تقييمات لهذا الصنف'}</div>`:''}
+        ${ranked.map((emp,i)=>{
+          const oa=overallAvg(emp.ratings);
+          const medals=['🥇','🥈','🥉'],bcs=['#FFD70044','#C0C0C044','#CD7F3244'];
+          const sortVal=sortBy==='overall'?oa:catAvg(emp.ratings,sortBy);
+          return`<div class="card" onclick="S.prevView='allRatings';S.selLocId='${emp.locId}';S.selEmpId='${emp.id}';S.ratingScores={};S.ratingNote='';S.empDetailTab='overview';S.view='employeeDetail';render()" style="cursor:pointer;border:1px solid ${i<3?bcs[i]:'var(--border)'}">
           <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">
             <div style="font-size:24px;width:34px;text-align:center;flex-shrink:0">${i<3?medals[i]:i+1}</div>
             ${empAvatarH(emp,emp.locColor,40,12)}
-            <div style="flex:1"><div style="display:flex;align-items:center;gap:6px"><div style="font-weight:700;font-size:14px">${emp.name}</div>${isNewEmp(emp)?`<span style="font-size:9px;background:#06D6A0;color:#000;border-radius:5px;padding:2px 6px;font-weight:800">جديد ✨</span>`:''}</div><div style="font-size:11px;color:#888">${emp.locIcon} ${emp.locName}</div></div>
-            <div style="text-align:center"><div style="font-size:20px;font-weight:800;color:#FFD700">${oa.toFixed(1)}</div>${perfLabel(oa)}</div>
+            <div style="flex:1"><div style="display:flex;align-items:center;gap:6px"><div style="font-weight:800;font-size:14px">${emp.name}</div>${isNewEmp(emp)?`<span style="font-size:9px;background:#06D6A0;color:#000;border-radius:5px;padding:2px 6px;font-weight:800">جديد ✨</span>`:''}</div><div style="font-size:11px;color:#888">${emp.locIcon} ${emp.locName}</div></div>
+            <div style="text-align:center"><div style="font-size:22px;font-weight:900;color:${sortColor}">${sortVal.toFixed(1)}</div>${sortBy==='overall'?perfLabel(oa):`<div style="font-size:9px;color:#666;margin-top:2px">/ 10</div>`}</div>
           </div>
-          <div style="display:flex;gap:6px">${cats.map(c=>{const ca=catAvg(emp.ratings,c.id);const col=ca?circleColor(Math.round(ca)):c.color;return`<div style="flex:1"><div style="font-size:11px;color:#888;text-align:center;margin-bottom:3px">${c.icon}</div><div style="height:4px;background:#333;border-radius:4px;overflow:hidden"><div style="height:100%;background:linear-gradient(90deg,#EF476F,#FFD700,#06D6A0);width:${ca/10*100}%"></div></div><div style="font-size:10px;color:${col};text-align:center;margin-top:2px;font-weight:700">${ca?ca.toFixed(1):'—'}</div></div>`;}).join('')}</div>
+          <div style="display:flex;gap:6px">${cats.map(c=>{const ca=catAvg(emp.ratings,c.id);const col=ca?circleColor(Math.round(ca)):c.color;const isActive=c.id===sortBy;return`<div style="flex:1;${isActive?`background:${c.color}15;border-radius:8px;padding:4px;border:1px solid ${c.color}44`:''}"><div style="font-size:11px;color:${isActive?c.color:'#888'};text-align:center;margin-bottom:3px;font-weight:${isActive?'800':'400'}">${c.icon}</div><div style="height:4px;background:#333;border-radius:4px;overflow:hidden"><div style="height:100%;background:linear-gradient(90deg,#EF476F,#FFD700,#06D6A0);width:${ca/10*100}%"></div></div><div style="font-size:10px;color:${col};text-align:center;margin-top:2px;font-weight:800">${ca?ca.toFixed(1):'—'}</div></div>`;}).join('')}</div>
         </div>`;}).join('')}
       </div>`}
   </div>`;
@@ -1348,12 +1400,44 @@ function renderEmpDetail(){
     <div class="row" style="margin-bottom:16px">
       <button class="back-btn" onclick="S.view=S.prevView||'location';render()">←</button>
       <div style="font-weight:800;font-size:18px">ملف الموظف</div>
-      <button onclick="S.empForm={name:'${emp.name}',role:'${emp.role}',phone:'${emp.phone||''}',shift:${emp.shift},salary:'${emp.salary||''}'};S.empPhoto=null;S.view='editEmployee';render()" style="margin-right:auto;background:#2EC4B622;color:#2EC4B6;padding:8px 14px;border-radius:12px;font-size:13px;font-family:inherit">✏️ تعديل</button>
-      <button onclick="S.showLeaveCalendar=true;S.leaveCalDate=TODAY;render()" style="background:#FF9F1C22;color:#FF9F1C;padding:8px 14px;border-radius:12px;font-size:13px;font-family:inherit">🏖️ إجازة</button>
+      <button onclick="S.empForm={name:'${emp.name}',role:'${emp.role}',phone:'${emp.phone||''}',shift:${emp.shift},salary:'${emp.salary||''}'};S.empPhoto=null;S.view='editEmployee';render()" style="margin-right:auto;background:#2EC4B622;color:#2EC4B6;padding:8px 12px;border-radius:11px;font-size:12px;font-family:inherit;font-weight:700">✏️ تعديل</button>
+      <button onclick="S.showMoveEmpModal=true;render()" style="background:#8338EC22;color:#8338EC;padding:8px 12px;border-radius:11px;font-size:12px;font-family:inherit;font-weight:700">🔀 نقل</button>
+      <button onclick="S.showLeaveCalendar=true;S.leaveCalDate=TODAY;render()" style="background:#FF9F1C22;color:#FF9F1C;padding:8px 12px;border-radius:11px;font-size:12px;font-family:inherit;font-weight:700">🏖️</button>
     </div>
     <div id='leave-cal-mount'></div>
+    <div id='move-emp-mount'></div>
     <!-- leave badges on profile -->
-    ${(()=>{const empLeaveCount=(S.data.leaves||[]).filter(l=>l.empId===emp.id).length;return empLeaveCount>0?`<div style="background:#FF9F1C11;border-radius:12px;padding:8px 14px;border:1px solid #FF9F1C33;margin-bottom:14px;display:flex;align-items:center;gap:10px"><span style="font-size:20px">🏖️</span><div style="flex:1"><div style="font-size:13px;font-weight:700;color:#FF9F1C">${empLeaveCount} إجازة مسجّلة</div><div style="font-size:11px;color:#888;margin-top:2px">${(S.data.leaves||[]).filter(l=>l.empId===emp.id).sort((a,b)=>b.date.localeCompare(a.date)).slice(0,1).map(l=>fmtLeaveDate(l.date)).join('')}</div></div><button onclick="S.showLeaveCalendar=true;S.leaveCalDate=TODAY;render()" style="background:#FF9F1C22;color:#FF9F1C;padding:5px 10px;border-radius:8px;font-size:11px;font-weight:700;font-family:inherit">عرض الكل</button></div>`:''})()}
+    ${(()=>{
+      const empAllLeaves=(S.data.leaves||[]).filter(l=>l.empId===emp.id);
+      const upcoming=empAllLeaves.filter(l=>l.date>=TODAY).sort((a,b)=>a.date.localeCompare(b.date));
+      const past=empAllLeaves.filter(l=>l.date<TODAY).sort((a,b)=>b.date.localeCompare(a.date));
+      if(empAllLeaves.length===0) return '';
+      return `<div style="background:#FF9F1C11;border-radius:12px;padding:10px 14px;border:1px solid #FF9F1C33;margin-bottom:14px">
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="font-size:20px">🏖️</span>
+          <div style="flex:1">
+            ${upcoming.length>0?`<div style="font-size:13px;font-weight:800;color:#FF9F1C">${upcoming.length} إجازة قادمة</div><div style="font-size:11px;color:#888;margin-top:2px">${fmtLeaveDate(upcoming[0].date)}${upcoming[0].addedByName?' · '+upcoming[0].addedByName:''}</div>`:`<div style="font-size:13px;font-weight:700;color:#888">لا توجد إجازات قادمة</div>${past.length>0?`<div style="font-size:11px;color:#666;margin-top:2px">آخر إجازة: ${fmtLeaveDate(past[0].date)}</div>`:''}`}
+          </div>
+          <button onclick="S.showLeaveCalendar=true;S.leaveCalDate=TODAY;render()" style="background:#FF9F1C22;color:#FF9F1C;padding:5px 10px;border-radius:8px;font-size:11px;font-weight:700;font-family:inherit">+ إجازة</button>
+        </div>
+        ${past.length>0?`<div style="margin-top:10px;padding-top:10px;border-top:1px solid #FF9F1C22">
+          <button onclick="S.showLeaveHistory=!S.showLeaveHistory;render()" style="width:100%;background:none;color:#888;font-size:11px;font-family:inherit;display:flex;align-items:center;justify-content:space-between;padding:0">
+            <span>📋 سجل الإجازات السابقة (${past.length})</span>
+            <span style="transform:${S.showLeaveHistory?'rotate(180deg)':'none'};transition:transform .2s">⌄</span>
+          </button>
+          ${S.showLeaveHistory?`<div style="margin-top:8px;display:flex;flex-direction:column;gap:5px;max-height:200px;overflow-y:auto">
+            ${past.map(l=>`<div style="background:#1a1a1a;border-radius:8px;padding:6px 10px;border:1px solid #333;display:flex;align-items:center;gap:8px;font-size:11px">
+              <span style="color:#666">📅</span>
+              <div style="flex:1">
+                <div style="color:#888">${fmtLeaveDate(l.date)}</div>
+                ${l.addedByName?`<div style="color:#555;font-size:10px;margin-top:1px">بواسطة ${l.addedByName}</div>`:''}
+              </div>
+              ${S.isSuperAdmin?`<button onclick="event.stopPropagation();doDeleteLeave('${l.id}')" style="background:#CC000022;color:#CC0000;width:22px;height:22px;border-radius:6px;font-size:10px">🗑</button>`:''}
+            </div>`).join('')}
+          </div>`:''}
+        </div>`:''}
+      </div>`;
+    })()}
     </div>
     <div style="background:var(--dark2);border-radius:20px;padding:18px;border:1px solid ${loc.color}44;margin-bottom:14px">
       <div class="row" style="margin-bottom:14px">
@@ -1486,11 +1570,42 @@ function mountLeaveCalendar(){
   el.innerHTML = renderLeaveCalendar(emp.id, emp.name, loc.name, loc.color);
 }
 
+function mountMoveEmpModal(){
+  const el = document.getElementById('move-emp-mount');
+  if(!el) return;
+  const emp = curEmp(), curL = curLoc();
+  if(!emp || !curL || !S.showMoveEmpModal) { el.innerHTML=''; return; }
+  const otherLocs=S.data.locations.filter(l=>l.id!==curL.id);
+  el.innerHTML=`
+    <div style="position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:500;display:flex;align-items:flex-end;justify-content:center" onclick="if(event.target===this){S.showMoveEmpModal=false;render()}">
+      <div style="background:var(--dark2);border-radius:24px 24px 0 0;padding:22px;width:100%;max-width:430px;border-top:1px solid var(--border);max-height:85vh;overflow-y:auto;animation:slideUp .25s ease">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px">
+          <span style="font-size:24px">🔀</span>
+          <div style="flex:1"><div style="font-weight:800;font-size:16px">نقل ${emp.name}</div><div style="font-size:12px;color:#888;margin-top:2px">من ${curL.icon} ${curL.name}</div></div>
+          <button onclick="S.showMoveEmpModal=false;render()" style="background:#333;color:#888;width:32px;height:32px;border-radius:10px;font-size:16px">✕</button>
+        </div>
+        <div style="background:#FFD70011;border:1px solid #FFD70033;border-radius:12px;padding:10px 12px;margin-bottom:14px;display:flex;align-items:flex-start;gap:8px">
+          <span style="font-size:16px">ℹ️</span>
+          <div style="font-size:11px;color:#FFD700;line-height:1.5">سيتم نقل الموظف مع جميع بياناته: التقييمات السابقة، الصورة، الراتب، والإجازات.</div>
+        </div>
+        <div style="font-size:12px;color:#888;font-weight:700;margin-bottom:8px">اختر القسم المستلم:</div>
+        ${otherLocs.length===0?'<div style="text-align:center;color:#555;padding:20px;font-size:13px">لا توجد أقسام أخرى</div>':`
+          <div style="display:flex;flex-direction:column;gap:8px">
+            ${otherLocs.map(l=>`<button onclick="doMoveEmployee('${l.id}')" style="background:${l.color}11;border:1px solid ${l.color}44;border-radius:14px;padding:14px;color:#fff;font-family:inherit;text-align:right;display:flex;align-items:center;gap:12px;cursor:pointer">
+              <span style="font-size:24px">${l.icon}</span>
+              <div style="flex:1"><div style="font-weight:800;font-size:14px;color:${l.color}">${l.name}</div><div style="font-size:11px;color:#888;margin-top:2px">${l.employees.length} موظف</div></div>
+              <span style="color:${l.color};font-size:18px">←</span>
+            </button>`).join('')}
+          </div>`}
+      </div>
+    </div>`;
+}
+
 function render(){
   const app=document.getElementById('app'); if(!app)return;
   window.scrollTo(0,0);
   // Will mount leave calendar after render if needed
-  requestAnimationFrame(mountLeaveCalendar);
+  requestAnimationFrame(()=>{mountLeaveCalendar();mountMoveEmpModal();});
   if(S.authStep==='loading')     {app.innerHTML=`<div style="min-height:100vh;display:flex;align-items:center;justify-content:center"><div class="spinner"></div></div>`;return;}
   if(!S.authUser||S.authStep==='login'||S.authStep==='forgot'){app.innerHTML=renderLogin();return;}
   if(!S.data)                    {app.innerHTML=`<div style="min-height:100vh;display:flex;align-items:center;justify-content:center"><div class="spinner"></div></div>`;return;}
