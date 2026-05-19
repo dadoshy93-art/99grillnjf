@@ -108,7 +108,7 @@ const isNewEmp = emp => {
 const empAvatarH = (emp, color, size=40, radius=12) =>
   emp.photo
     ? `<img src="${emp.photo}" style="width:${size}px;height:${size}px;border-radius:50%;object-fit:cover;border:2px solid ${color}44;flex-shrink:0"/>`
-    : `<div style="width:${size}px;height:${size}px;border-radius:${radius}px;background:${color}33;display:flex;align-items:center;justify-content:center;font-size:${Math.round(size*0.45)}px;font-weight:800;color:${color};flex-shrink:0">${emp.name[0]}</div>`;
+    : `<div style="width:${size}px;height:${size}px;border-radius:${radius}px;background:${color}33;display:flex;align-items:center;justify-content:center;font-size:${Math.round(size*0.45)}px;font-weight:800;color:${color};flex-shrink:0">${(emp.name||'؟')[0]}</div>`;
 const PRI_COLOR = {high:'#EF476F',medium:'#FFD700',low:'#06D6A0'};
 const PRI_LABEL = {high:'عاجل',medium:'متوسط',low:'عادي'};
 const SHIFT_COLOR = {8:'#2EC4B6',12:'#CC0000'};
@@ -163,6 +163,7 @@ const S = {
   showPwd: false,
   authError: '',
   data: null,
+  loadFailed: false,
   view: 'home',
   selLocId: null,
   selEmpId: null,
@@ -402,11 +403,11 @@ async function loadOrInit(){
     console.error('⛔ load err — NOT writing defaults to protect data:',e);
     S.data = null;
     SAFE_TO_WRITE = false;
-    toast$('⚠️ تعذّر تحميل البيانات. تحقق من الاتصال وأعد المحاولة','error');
-    // Retry after 3 seconds
-    setTimeout(()=>{ loadOrInit(); }, 3000);
+    S.loadFailed = true;
+    render(); // show error screen with manual retry button
     return;
   }
+  S.loadFailed = false;
   listenFirebase();
 }
 
@@ -442,9 +443,9 @@ async function forceReloadFromFirebase(){
     toast$('خطأ: '+e.message,'error');
   }
 }
-function updEmp(lid,eid,fn){
+async function updEmp(lid,eid,fn){
   S.data.locations=S.data.locations.map(l=>l.id===lid?{...l,employees:l.employees.map(e=>e.id===eid?fn(e):e)}:l);
-  saveData();
+  await saveData();
 }
 
 // ══════════════════ AUTH ACTIONS ══════════════════
@@ -497,8 +498,9 @@ async function doAddManager(){
   if((S.data.managers||[]).find(m=>m.email===email)){toast$('هذا الإيميل مسجل مسبقاً','error');return;}
 
   // Save super admin credentials before creating new account
-  const adminEmail = S.authUser.email;
+  const adminEmail = S.authUser?.email;
   const adminPass  = S.savedAdminPass || '';
+  if(!adminEmail){ toast$('انتهت الجلسة، أعد تسجيل الدخول','error'); return; }
   if(!adminPass){
     toast$('أدخل كلمة مرورك أنت في حقل "كلمة مرورك للتأكيد"','error');
     S.authStep='app'; render(); return;
@@ -509,13 +511,18 @@ async function doAddManager(){
     // Create new manager account in Firebase Auth
     const cred = await auth.createUserWithEmailAndPassword(email, pass);
     await cred.user.updateProfile({displayName: name});
+    const newMgr = {email, name, uid:cred.user.uid, createdAt:new Date().toISOString(), salaryAccess:false};
 
-    // Re-login as super admin
+    // Re-login as super admin (this triggers onAuthStateChanged -> loadOrInit which
+    // reloads S.data fresh from Firebase, so we must add the manager AFTER reload completes)
     await auth.signInWithEmailAndPassword(adminEmail, adminPass);
+    // Give the auth listener / loadOrInit a moment to refresh S.data
+    await new Promise(r=>setTimeout(r,800));
 
-    // Save to Firestore
+    // Now add to the freshly-loaded data and save
+    if(!S.data) { toast$('تعذّر تحميل البيانات بعد إعادة الدخول','error'); S.authStep='app'; render(); return; }
     if(!S.data.managers) S.data.managers=[];
-    S.data.managers.push({email, name, uid:cred.user.uid, createdAt:new Date().toISOString(), salaryAccess:false});
+    if(!S.data.managers.find(m=>m.email===email)) S.data.managers.push(newMgr);
     S.newMgrEmail=''; S.newMgrName=''; S.newMgrPass='';
     S.showAdminPassPrompt=false;
     await saveData();
@@ -536,6 +543,7 @@ async function doAddManager(){
 async function doRemoveManager(email){
   if(email===SUPER_ADMIN_EMAIL){toast$('لا يمكن حذف المدير الرئيسي','error');return;}
   if(email===S.authUser?.email){toast$('لا تقدر تحذف حسابك الحالي','error');return;}
+  if(!confirm(`حذف المدير "${email}"؟\n\nملاحظة: هذا يحذفه من القائمة فقط، حسابه في Firebase يبقى.`)) return;
   S.data.managers=(S.data.managers||[]).filter(m=>m.email!==email);
   await saveData(); toast$('تم حذف المدير'); render();
 }
@@ -550,18 +558,25 @@ async function doResetManagerPass(email){
 // Fix duplicate/conflicting IDs in existing data
 async function fixAllIds(){
   if(!confirm('سيتم إصلاح جميع الـ IDs في البيانات. هل تريد المتابعة؟')) return;
-  // Reassign unique IDs to all locations and employees
+  // Build a map of old empId -> new empId so we can preserve leaves
+  const idMap = {};
   S.data.locations = S.data.locations.map(loc => ({
     ...loc,
     id: uid(),
-    employees: loc.employees.map(emp => ({
-      ...emp,
-      id: uid(),
-      ratings: (emp.ratings||[]).map(r => ({...r, id: r.id||uid()}))
-    }))
+    employees: loc.employees.map(emp => {
+      const newId = uid();
+      idMap[emp.id] = newId;
+      return {
+        ...emp,
+        id: newId,
+        ratings: (emp.ratings||[]).map(r => ({...r, id: r.id||uid()}))
+      };
+    })
   }));
-  // Fix leaves references - clear them since emp IDs changed
-  S.data.leaves = [];
+  // Remap leaves to the new employee IDs (preserve them, don't delete)
+  S.data.leaves = (S.data.leaves||[])
+    .filter(l => idMap[l.empId])           // keep only leaves whose employee still exists
+    .map(l => ({...l, empId: idMap[l.empId]}));
   await saveData();
   toast$('تم إصلاح جميع الـ IDs ✅ يرجى إعادة فتح التطبيق');
   setTimeout(()=>location.reload(), 1500);
@@ -595,9 +610,16 @@ async function syncManagersFromFirebase(){
   render();
 }
 
-async function doAddLeave(empId, empName, locName, locColor, date){
+async function doAddLeave(empId, date){
   if(!date) return toast$('اختر التاريخ','error');
   if(!S.data.leaves) S.data.leaves=[];
+  // Find employee and their location internally (avoids string-escaping bugs)
+  let empName='', locName='', locColor='#CC0000';
+  for(const l of S.data.locations){
+    const e=(l.employees||[]).find(x=>x.id===empId);
+    if(e){ empName=e.name; locName=l.name; locColor=l.color; break; }
+  }
+  if(!empName) return toast$('الموظف غير موجود','error');
   const myEmail=S.authUser?.email||'';
   const myName=S.authUser?.displayName||(S.data.managers||[]).find(m=>m.email===myEmail)?.name||myEmail.split('@')[0];
   if(S.data.leaves.find(l=>l.empId===empId&&l.date===date))
@@ -639,8 +661,10 @@ async function doAddEmp(){
 }
 async function doEditEmp(){
   if(!S.empForm.name||!S.empForm.role)return toast$('يرجى ملء الاسم والوظيفة','error');
+  const loc=curLoc();
+  if(!loc) return toast$('خطأ: القسم غير موجود','error');
   const photoToSave = S.empPhoto; // capture before clearing
-  const lid=curLoc().id, eid=S.selEmpId;
+  const lid=loc.id, eid=S.selEmpId;
   // Update state + photo immediately so UI shows it right away
   S.data.locations=S.data.locations.map(l=>l.id===lid?{...l,employees:l.employees.map(e=>e.id===eid?{...e,name:S.empForm.name,role:S.empForm.role,phone:S.empForm.phone,shift:S.empForm.shift,salary:Number(S.empForm.salary)||0,...(photoToSave!==null?{photo:photoToSave}:{})}:e)}:l);
   S.empPhoto=null;
@@ -691,6 +715,8 @@ function rePhotoPreview(){
 }
 async function doDeleteEmp(){
   const l=curLoc();
+  if(!l) return toast$('خطأ: القسم غير موجود','error');
+  if(!confirm('هل أنت متأكد من حذف هذا الموظف؟ سيتم حذف جميع تقييماته نهائياً.')) return;
   S.data.locations=S.data.locations.map(loc=>loc.id===l.id?{...loc,employees:loc.employees.filter(e=>e.id!==S.selEmpId)}:loc);
   await saveData(); toast$('تم حذف الموظف'); S.view='location'; render();
 }
@@ -721,12 +747,14 @@ async function doMoveEmployee(targetLocId){
 async function doAddRating(){
   const cats=S.data.categories;
   if(!cats.some(c=>(S.ratingScores[c.id]||0)>0))return toast$('قيّم صنفاً واحداً على الأقل','error');
+  const loc=curLoc();
+  if(!loc) return toast$('خطأ: القسم غير موجود','error');
   const myEmail=S.authUser?.email||'unknown';
   const myName=S.authUser?.displayName||(S.data.managers||[]).find(m=>m.email===myEmail)?.name||myEmail.split('@')[0];
   // Check if THIS user already rated today
   if(curEmpR()?.ratings.find(r=>r.date===TODAY&&r.reviewerEmail===myEmail))
     return toast$('قيّمت هذا الموظف اليوم مسبقاً','error');
-  updEmp(curLoc().id,S.selEmpId,e=>({...e,ratings:[...e.ratings,{
+  await updEmp(loc.id,S.selEmpId,e=>({...e,ratings:[...e.ratings,{
     id: uid(),
     date:TODAY,
     note:S.ratingNote,
@@ -737,7 +765,9 @@ async function doAddRating(){
   S.ratingScores={}; S.ratingNote=''; toast$('تم حفظ التقييم ✅'); render();
 }
 async function doDeleteRating(ratingId){
-  updEmp(curLoc().id,S.selEmpId,e=>({...e,ratings:e.ratings.filter(r=>r.id!==ratingId)}));
+  const loc=curLoc();
+  if(!loc) return toast$('خطأ: القسم غير موجود','error');
+  await updEmp(loc.id,S.selEmpId,e=>({...e,ratings:e.ratings.filter(r=>r.id!==ratingId)}));
   toast$('تم حذف التقييم'); render();
 }
 async function doAddLoc(){
@@ -747,6 +777,10 @@ async function doAddLoc(){
   await saveData(); toast$('تمت إضافة المكان ✅'); S.view='home'; render();
 }
 async function doDeleteLoc(){
+  const loc=S.data.locations.find(l=>l.id===S.selLocId);
+  if(!loc) return toast$('القسم غير موجود','error');
+  const empCount=(loc.employees||[]).length;
+  if(!confirm(`حذف قسم "${loc.name}"؟${empCount>0?`\n\n⚠️ سيتم حذف ${empCount} موظف وكل تقييماتهم نهائياً!`:''}`)) return;
   S.data.locations=S.data.locations.filter(l=>l.id!==S.selLocId);
   await saveData(); toast$('تم حذف المكان'); S.view='home'; render();
 }
@@ -965,7 +999,7 @@ function renderLeaveCalendar(empId, empName, locName, locColor){
     <div style="position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:500;display:flex;align-items:flex-end;justify-content:center" onclick="if(event.target===this){S.showLeaveCalendar=false;render()}">
       <div style="background:#1A1A24;border-radius:24px 24px 0 0;padding:20px;width:100%;max-width:430px;border-top:1px solid #333;max-height:85vh;overflow-y:auto">
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px">
-          <div style="width:36px;height:36px;border-radius:50%;background:${locColor}33;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:800;color:${locColor};flex-shrink:0">${empName[0]}</div>
+          <div style="width:36px;height:36px;border-radius:50%;background:${locColor}33;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:800;color:${locColor};flex-shrink:0">${(empName||'؟')[0]}</div>
           <div style="flex:1"><div style="font-weight:700;font-size:15px">📅 إجازة: ${empName}</div><div style="font-size:12px;color:#888">${locName}</div></div>
           <button onclick="S.showLeaveCalendar=false;render()" style="background:#333;color:#888;width:32px;height:32px;border-radius:10px;font-size:16px">✕</button>
         </div>
@@ -986,7 +1020,7 @@ function renderLeaveCalendar(empId, empName, locName, locColor){
             const dateStr = `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
             const isLeave = empLeaves.includes(dateStr);
             const isToday = dateStr===TODAY;
-            return `<button onclick="doAddLeave('${empId}','${empName.replace(/'/g,"\\'")}','${locName.replace(/'/g,"\\'")}','${locColor}','${dateStr}')"
+            return `<button onclick="doAddLeave('${empId}','${dateStr}')"
               style="aspect-ratio:1;border-radius:10px;font-size:14px;font-weight:700;
               background:${isLeave?'#CC0000':isToday?'#CC000022':'#2A2A34'};
               color:${isLeave?'#fff':isToday?'#CC0000':'#ccc'};
@@ -1477,8 +1511,8 @@ function renderLocation(){
         <button class="back-btn" onclick="S.view='home';S.editLocId=null;render()">←</button>
         <span style="font-size:28px">${loc.icon}</span>
         <div style="flex:1"><div style="font-weight:800;font-size:18px">${loc.name}</div><div style="font-size:12px;color:#888">${loc.employees.length} موظف · ${fmtSalary(loc.employees.reduce((s,e)=>s+(Number(e.salary)||0),0))}</div></div>
-        <button onclick="S.editLocId='${loc.id}';S.editLocForm={name:'${loc.name}',icon:'${loc.icon}',color:'${loc.color}'};render()" style="background:#2EC4B622;color:#2EC4B6;width:38px;height:38px;border-radius:12px;font-size:16px">✏️</button>
-        <button onclick="if(confirm('هل تريد حذف هذا القسم؟'))doDeleteLoc()" style="background:#CC000022;color:#CC0000;width:38px;height:38px;border-radius:12px;font-size:16px">🗑</button>
+        <button onclick="S.editLocId='${loc.id}';S.editLocForm={name:${JSON.stringify(loc.name)},icon:'${loc.icon}',color:'${loc.color}'};render()" style="background:#2EC4B622;color:#2EC4B6;width:38px;height:38px;border-radius:12px;font-size:16px">✏️</button>
+        <button onclick="doDeleteLoc()" style="background:#CC000022;color:#CC0000;width:38px;height:38px;border-radius:12px;font-size:16px">🗑</button>
       </div>
       ${editForm}
       ${loc.employees.length>0&&!S.editLocId?`<div style="display:flex;gap:8px;margin-bottom:14px">${[[8,'#2EC4B6'],[12,'#CC0000']].map(([h,c])=>`<div style="flex:1;background:${c}11;border-radius:12px;padding:10px 14px;border:1px solid ${c}33;display:flex;align-items:center;gap:8px"><div style="font-size:20px;font-weight:800;color:${c}">${loc.employees.filter(e=>e.shift===h).length}</div><div style="font-size:11px;color:#888">دوام ${h} ساعة</div></div>`).join('')}</div>`:''}
@@ -1498,7 +1532,7 @@ function renderEmpDetail(){
     <div class="row" style="margin-bottom:16px">
       <button class="back-btn" onclick="S.view=S.prevView||'location';render()">←</button>
       <div style="font-weight:800;font-size:18px">ملف الموظف</div>
-      <button onclick="S.empForm={name:'${emp.name}',role:'${emp.role}',phone:'${emp.phone||''}',shift:${emp.shift},salary:'${emp.salary||''}'};S.empPhoto=null;S.view='editEmployee';render()" style="margin-right:auto;background:#2EC4B622;color:#2EC4B6;padding:8px 12px;border-radius:11px;font-size:12px;font-family:inherit;font-weight:700">✏️ تعديل</button>
+      <button onclick='S.empForm={name:${JSON.stringify(emp.name)},role:${JSON.stringify(emp.role)},phone:${JSON.stringify(emp.phone||"")},shift:${emp.shift},salary:${JSON.stringify(String(emp.salary||""))}};S.empPhoto=null;S.view="editEmployee";render()' style="margin-right:auto;background:#2EC4B622;color:#2EC4B6;padding:8px 12px;border-radius:11px;font-size:12px;font-family:inherit;font-weight:700">✏️ تعديل</button>
       <button onclick="S.showMoveEmpModal=true;render()" style="background:#8338EC22;color:#8338EC;padding:8px 12px;border-radius:11px;font-size:12px;font-family:inherit;font-weight:700">🔀 نقل</button>
       <button onclick="S.showLeaveCalendar=true;S.leaveCalDate=TODAY;render()" style="background:#FF9F1C22;color:#FF9F1C;padding:8px 12px;border-radius:11px;font-size:12px;font-family:inherit;font-weight:700">🏖️</button>
     </div>
@@ -1706,7 +1740,20 @@ function render(){
   requestAnimationFrame(()=>{mountLeaveCalendar();mountMoveEmpModal();});
   if(S.authStep==='loading')     {app.innerHTML=`<div style="min-height:100vh;display:flex;align-items:center;justify-content:center"><div class="spinner"></div></div>`;return;}
   if(!S.authUser||S.authStep==='login'||S.authStep==='forgot'){app.innerHTML=renderLogin();return;}
-  if(!S.data)                    {app.innerHTML=`<div style="min-height:100vh;display:flex;align-items:center;justify-content:center"><div class="spinner"></div></div>`;return;}
+  if(!S.data){
+    if(S.loadFailed){
+      app.innerHTML=`<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:20px;padding:30px;text-align:center">
+        <div style="font-size:60px">📡</div>
+        <div style="font-size:18px;font-weight:800;color:#fff">تعذّر تحميل البيانات</div>
+        <div style="font-size:14px;color:#888;line-height:1.6;max-width:300px">قد تكون مشكلة في الاتصال بالإنترنت أو في صلاحيات Firebase. بياناتك آمنة ولم تُمسح.</div>
+        <button onclick="S.loadFailed=false;S.data=null;render();loadOrInit()" style="padding:14px 32px;background:linear-gradient(135deg,#C8102E,#9e0d24);border-radius:14px;color:#fff;font-size:15px;font-weight:800;font-family:inherit;box-shadow:0 6px 20px rgba(200,16,46,.4)">🔄 إعادة المحاولة</button>
+        <button onclick="doLogout()" style="padding:10px 24px;background:#333;border-radius:12px;color:#888;font-size:13px;font-family:inherit">تسجيل خروج</button>
+      </div>`;
+      return;
+    }
+    app.innerHTML=`<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:14px"><div class="spinner"></div><div style="color:#888;font-size:13px">جاري تحميل البيانات...</div></div>`;
+    return;
+  }
   if(S.managerView&&S.isSuperAdmin){app.innerHTML=renderManagers();return;}
   switch(S.view){
     case 'home':             app.innerHTML=renderHome();break;
@@ -1728,9 +1775,11 @@ auth.onAuthStateChanged(async user=>{
     S.isSuperAdmin=(user.email===SUPER_ADMIN_EMAIL);
     S.authStep='app';
     await loadOrInit();
-    // Check salary access
-    const mgr=(S.data.managers||[]).find(m=>m.email===user.email);
-    S.canSeeSalary=S.isSuperAdmin||(mgr?.salaryAccess===true);
+    // loadOrInit may have failed (S.data null) — guard against crash
+    if(S.data){
+      const mgr=(S.data.managers||[]).find(m=>m.email===user.email);
+      S.canSeeSalary=S.isSuperAdmin||(mgr?.salaryAccess===true);
+    }
     render();
   } else {
     S.authUser=null; S.isSuperAdmin=false;
