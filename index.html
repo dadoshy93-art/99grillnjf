@@ -231,8 +231,25 @@ function toast$(msg,type='success'){
 // restaurant/main  → categories, tasks, managers, leaves, locations (no employees)
 // restaurant/emps  → {empId: empData} (employees with photos)
 
+// Guard flag: blocks ALL writes until we've safely loaded real data once
+let SAFE_TO_WRITE = false;
+
 async function syncToFirebase(){
   if(!S.data) return;
+  // 🛡️ CRITICAL GUARD: never write before a successful initial load
+  if(!SAFE_TO_WRITE){
+    console.warn('⛔ Write blocked: initial data not loaded yet');
+    toast$('⏳ انتظر اكتمال تحميل البيانات قبل الحفظ','error');
+    return;
+  }
+  // 🛡️ GUARD: never overwrite with suspiciously empty data
+  const empCount = (S.data.locations||[]).reduce((s,l)=>s+((l.employees||[]).length),0);
+  const locCount = (S.data.locations||[]).length;
+  if(locCount===0 && (S.data.categories||[]).length===0){
+    console.warn('⛔ Write blocked: data looks empty (no locations, no categories)');
+    toast$('⛔ تم منع الحفظ: البيانات فارغة بشكل غير طبيعي','error');
+    return;
+  }
   try{
     // Strip photos from main doc to avoid 1MB limit
     // Photos saved separately per employee
@@ -295,6 +312,15 @@ function listenFirebase(){
   db.collection('restaurant').doc('main').onSnapshot(async snap=>{
     if(!snap.exists) return;
     const d = snap.data();
+    // 🛡️ GUARD: if incoming snapshot is empty but we already have good local data, ignore it
+    const incomingLocs = (d.locations||[]).length;
+    const incomingCats = (d.categories||[]).length;
+    const currentLocs  = (S.data?.locations||[]).length;
+    const currentEmps  = (S.data?.locations||[]).reduce((s,l)=>s+((l.employees||[]).length),0);
+    if(incomingLocs===0 && incomingCats===0 && (currentLocs>0 || currentEmps>0)){
+      console.warn('⛔ Ignoring empty snapshot — keeping current local data');
+      return;
+    }
     const photos = await loadPhotos();
     // Preserve any photos already in local state (avoids flicker when snapshot fires before photo subcollection saves)
     const localPhotos = {};
@@ -309,6 +335,7 @@ function listenFirebase(){
         employees: (l.employees||[]).map(e=>({...e, photo: photos[e.id]||localPhotos[e.id]||e.photo||''}))
       }))
     };
+    SAFE_TO_WRITE = true; // confirmed we have live data
     if(S.authUser){
       const mgr=(S.data.managers||[]).find(m=>m.email===S.authUser.email);
       S.canSeeSalary=S.isSuperAdmin||(mgr?.salaryAccess===true);
@@ -323,45 +350,98 @@ async function loadOrInit(){
     if(mainSnap.exists){
       const d = mainSnap.data();
       const photos = await loadPhotos();
-      S.data = {
-        categories: d.categories||[],
-        tasks:      d.tasks||[],
-        managers:   d.managers||[],
-        leaves:     d.leaves||[],
-        locations: (d.locations||[]).map(l=>({
-          ...l,
-          employees: (l.employees||[]).map(e=>({...e, photo: photos[e.id]||e.photo||''}))
-        }))
-      };
-      if(S.authUser){
-        const mgr=(S.data.managers||[]).find(m=>m.email===S.authUser.email);
-        S.canSeeSalary=S.isSuperAdmin||(mgr?.salaryAccess===true);
-      }
-      // If old sub-collection format, migrate back
+      // Migrate old sub-collection format FIRST if needed
       if(d.locationsLight && !d.locations){
         toast$('جاري استعادة البيانات...','info');
-        // Load employees from sub-collection
         try{
           const empsSnap = await db.collection('restaurant').doc('main').collection('emps').get();
           const empsMap = {};
           empsSnap.forEach(doc=>{ empsMap[doc.id]=doc.data(); });
-          S.data.locations = (d.locationsLight||[]).map(ll=>({
-            id:ll.id, name:ll.name, icon:ll.icon, color:ll.color,
-            employees: (ll.empIds||[]).map(eid=>empsMap[eid]||null).filter(Boolean)
-          }));
+          S.data = {
+            categories: d.categories||[],
+            tasks:      d.tasks||[],
+            managers:   d.managers||[],
+            leaves:     d.leaves||[],
+            locations: (d.locationsLight||[]).map(ll=>({
+              id:ll.id, name:ll.name, icon:ll.icon, color:ll.color,
+              employees: (ll.empIds||[]).map(eid=>empsMap[eid]||null).filter(Boolean)
+            }))
+          };
+          SAFE_TO_WRITE = true; // we have real data now
           await syncToFirebase();
           toast$('تم استعادة البيانات ✅');
         }catch(e){ console.warn('migration err',e); }
+      } else {
+        S.data = {
+          categories: d.categories||[],
+          tasks:      d.tasks||[],
+          managers:   d.managers||[],
+          leaves:     d.leaves||[],
+          locations: (d.locations||[]).map(l=>({
+            ...l,
+            employees: (l.employees||[]).map(e=>({...e, photo: photos[e.id]||e.photo||''}))
+          }))
+        };
       }
+      if(S.authUser){
+        const mgr=(S.data.managers||[]).find(m=>m.email===S.authUser.email);
+        S.canSeeSalary=S.isSuperAdmin||(mgr?.salaryAccess===true);
+      }
+      // ✅ Successful load of existing data — writing is now safe
+      SAFE_TO_WRITE = true;
     } else {
-      S.data = {...DEFAULT_DATA};
+      // 🛡️ Document genuinely does not exist — TRUE first-time setup ONLY
+      console.log('No main doc found — initializing defaults (first run)');
+      S.data = JSON.parse(JSON.stringify(DEFAULT_DATA));
+      SAFE_TO_WRITE = true;
       await syncToFirebase();
     }
-  }catch(e){ console.warn('load err',e); S.data={...DEFAULT_DATA}; }
+  }catch(e){
+    // 🛡️ CRITICAL: On ANY error (network, permissions), do NOT write defaults.
+    // Keep SAFE_TO_WRITE = false so we never accidentally wipe Firebase.
+    console.error('⛔ load err — NOT writing defaults to protect data:',e);
+    S.data = null;
+    SAFE_TO_WRITE = false;
+    toast$('⚠️ تعذّر تحميل البيانات. تحقق من الاتصال وأعد المحاولة','error');
+    // Retry after 3 seconds
+    setTimeout(()=>{ loadOrInit(); }, 3000);
+    return;
+  }
   listenFirebase();
 }
 
 async function saveData(){ await syncToFirebase(); }
+
+// Emergency: re-read everything from Firebase WITHOUT writing anything
+async function forceReloadFromFirebase(){
+  toast$('جاري إعادة تحميل البيانات من Firebase...','info');
+  try{
+    const mainSnap = await db.collection('restaurant').doc('main').get();
+    if(!mainSnap.exists){
+      return toast$('⚠️ لا يوجد مستند بيانات في Firebase','error');
+    }
+    const d = mainSnap.data();
+    const photos = await loadPhotos();
+    const locs = (d.locations||[]).map(l=>({
+      ...l,
+      employees:(l.employees||[]).map(e=>({...e, photo:photos[e.id]||e.photo||''}))
+    }));
+    const empCount = locs.reduce((s,l)=>s+(l.employees||[]).length,0);
+    S.data = {
+      categories: d.categories||[],
+      tasks:      d.tasks||[],
+      managers:   d.managers||[],
+      leaves:     d.leaves||[],
+      locations:  locs
+    };
+    SAFE_TO_WRITE = true;
+    toast$(`✅ تم تحميل ${locs.length} قسم و ${empCount} موظف`);
+    render();
+  }catch(e){
+    console.error('force reload err',e);
+    toast$('خطأ: '+e.message,'error');
+  }
+}
 function updEmp(lid,eid,fn){
   S.data.locations=S.data.locations.map(l=>l.id===lid?{...l,employees:l.employees.map(e=>e.id===eid?fn(e):e)}:l);
   saveData();
@@ -761,10 +841,24 @@ function doRestorePrompt(){
           tasks:      d.tasks||[],
           managers:   d.managers||[],
           leaves:     d.leaves||[],
-          locations:  (d.locations||[]).map(l=>({...l, employees:(l.employees||[])}))
+          locations:  (d.locations||[]).map(l=>({...l, employees:(l.employees||[]).map(e=>({...e, ratings:e.ratings||[]}))}))
         };
+        // 🛡️ Restore is an explicit user action with valid data — force allow write
+        SAFE_TO_WRITE = true;
         await syncToFirebase();
-        toast$('✅ تمت استعادة البيانات بنجاح');
+        // Explicitly save photos from the backup to the photos subcollection
+        const photoPromises = [];
+        (d.locations||[]).forEach(l=>(l.employees||[]).forEach(e=>{
+          if(e.photo){
+            photoPromises.push(
+              db.collection('restaurant').doc('photos').collection('emps').doc(e.id)
+                .set({photo:e.photo, updatedAt:new Date().toISOString()})
+                .catch(err=>console.warn('restore photo err',e.id,err))
+            );
+          }
+        }));
+        if(photoPromises.length) await Promise.allSettled(photoPromises);
+        toast$(`✅ تمت استعادة ${empCount} موظف بنجاح`);
         render();
       }catch(err){
         console.error('restore err',err);
@@ -1179,6 +1273,10 @@ function renderManagers(){
         </button>
       </div>
       <div style="font-size:10px;color:#444;margin-top:8px;text-align:center">⚠️ الاستعادة ستستبدل جميع البيانات الحالية</div>
+      <button onclick="forceReloadFromFirebase()" style="width:100%;margin-top:12px;padding:12px;background:#118AB222;border:1px solid #118AB244;border-radius:12px;color:#118AB2;font-size:13px;font-weight:700;font-family:inherit">
+        🔄 إعادة تحميل البيانات من Firebase
+      </button>
+      <div style="font-size:10px;color:#444;margin-top:6px;text-align:center">إذا اختفت البيانات فجأة، اضغط هنا قبل أي شيء (لا يكتب، فقط يقرأ)</div>
     </div>
   </div>`;
 }
