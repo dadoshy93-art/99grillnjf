@@ -1,4 +1,4 @@
-const CACHE = '99grill-v3';
+const CACHE = '99grill-v4';
 const ASSETS = ['./index.html', './manifest.json'];
 
 self.addEventListener('install', e => {
@@ -22,7 +22,7 @@ self.addEventListener('fetch', e => {
   // Always fetch fresh from network for HTML
   if(e.request.url.endsWith('.html') || e.request.url.endsWith('/')) {
     e.respondWith(
-      fetch(e.request).then(res => {
+      fetch(e.request,{cache:'no-store'}).then(res => {
         const clone = res.clone();
         caches.open(CACHE).then(c => c.put(e.request, clone));
         return res;
