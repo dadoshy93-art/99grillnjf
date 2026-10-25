@@ -88,6 +88,10 @@ button{cursor:pointer;border:none;outline:none}
 .ip img{width:100%;height:100%;object-fit:cover;border-radius:12px;border:1px solid var(--border);cursor:zoom-in}
 .ip button{position:absolute;top:-6px;left:-6px;width:22px;height:22px;border-radius:50%;background:var(--red);color:#fff;font-size:11px;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,.5)}
 .insp-add{display:inline-flex;align-items:center;gap:6px;padding:9px 14px;border-radius:12px;background:rgba(200,16,46,.12);border:1px dashed rgba(200,16,46,.55);color:#ff6b81;font-size:13px;font-weight:700;cursor:pointer}
+
+.tg{padding:6px 10px;border-radius:9px;font-size:11px;font-weight:700;background:var(--dark3);color:#777;border:1px solid var(--border);font-family:inherit}
+.tg.on{background:rgba(200,16,46,.2);color:#ff6b81;border-color:rgba(200,16,46,.5)}
+.tg.ok.on{background:rgba(6,214,160,.15);color:#06D6A0;border-color:rgba(6,214,160,.4)}
 @media print{
   html,body,#app{background:#fff!important;color:#000!important}
   .no-print,.toast{display:none!important}
@@ -1184,6 +1188,7 @@ function renderHome(){
         <button onclick="S.ratingsTab='all';S.view='allRatings';render()" style="flex:1;background:linear-gradient(135deg,#FFD70018,#CC000018);border:1px solid #CC000033;border-radius:16px;padding:14px 12px;font-family:inherit;display:flex;align-items:center;gap:10px;color:#fff"><span style="font-size:24px">🏆</span><div style="text-align:right"><div style="font-weight:700;font-size:14px">التقييمات</div><div style="font-size:11px;color:#888;margin-top:1px">ترتيب الموظفين</div></div></button>
         <button onclick="S.catEditId=null;S.showAddCat=false;S.catForm={label:'',icon:'⭐',color:'#FFD700'};S.view='manageCategories';render()" style="flex:1;background:linear-gradient(135deg,#33333322,#CC000018);border:1px solid #33333366;border-radius:16px;padding:14px 12px;font-family:inherit;display:flex;align-items:center;gap:10px;color:#fff"><span style="font-size:24px">🗂</span><div style="text-align:right"><div style="font-weight:700;font-size:14px">أصناف التقييم</div><div style="font-size:11px;color:#888;margin-top:1px">إدارة وتخصيص</div></div></button>
       </div>
+      ${inspHomeH()}
       <button onclick="inspOpen()" style="width:100%;margin-top:10px;background:linear-gradient(135deg,#1F4E7933,#CC000018);border:1px solid #CC000033;border-radius:16px;padding:14px 12px;font-family:inherit;display:flex;align-items:center;gap:10px;color:#fff"><span style="font-size:24px">📋</span><div style="text-align:right"><div style="font-weight:700;font-size:14px">التقييم اليومي</div><div style="font-size:11px;color:#888;margin-top:1px">فحص الفروع + صور الأقسام + تقرير أسبوعي</div></div></button>
     </div>
     <div style="padding:20px 20px 100px">
@@ -1330,6 +1335,15 @@ function renderManagers(){
         </button>
       </div>
       <div style="font-size:10px;color:#444;margin-top:8px;text-align:center">⚠️ الاستعادة ستستبدل جميع البيانات الحالية</div>
+      <div style="margin-top:16px;padding-top:12px;border-top:1px solid #2a2a2a">
+        <div style="font-size:12px;color:#06D6A0;font-weight:700;margin-bottom:4px">📋 نسخة التقييم اليومي</div>
+        <div style="font-size:11px;color:#666;margin-bottom:8px">التقييمات والإجراءات وإعدادات الأقسام — منفصلة عن نسخة الموظفين. «مع الصور» ملف أكبر.</div>
+        <div style="display:flex;gap:8px">
+          <button onclick="inspBackup(false)" style="flex:1;padding:12px 4px;background:#06D6A022;border:1px solid #06D6A044;border-radius:12px;color:#06D6A0;font-size:12px;font-weight:700;font-family:inherit">⬇ بدون صور</button>
+          <button onclick="inspBackup(true)" style="flex:1;padding:12px 4px;background:#06D6A022;border:1px solid #06D6A044;border-radius:12px;color:#06D6A0;font-size:12px;font-weight:700;font-family:inherit">⬇ مع الصور</button>
+        </div>
+        <button onclick="inspRestorePrompt()" style="width:100%;margin-top:8px;padding:12px;background:#FF9F1C22;border:1px solid #FF9F1C44;border-radius:12px;color:#FF9F1C;font-size:12px;font-weight:700;font-family:inherit">⬆ استعادة نسخة التقييم اليومي</button>
+      </div>
       <button onclick="forceReloadFromFirebase()" style="width:100%;margin-top:12px;padding:12px;background:#118AB222;border:1px solid #118AB244;border-radius:12px;color:#118AB2;font-size:13px;font-weight:700;font-family:inherit">
         🔄 إعادة تحميل البيانات من Firebase
       </button>
@@ -1757,22 +1771,35 @@ function mountMoveEmpModal(){
 }
 
 // ══════════════════ DAILY INSPECTION (التقييم اليومي) ══════════════════
-// Data lives in its own Firestore paths — it never touches restaurant/main:
-//   restaurant/inspections/days/{branch}_{date}   → scores + notes
-//   restaurant/inspections/photos/{autoId}        → one compressed photo per doc
+// Firestore paths (never touch restaurant/main):
+//   restaurant/inspections/days/{branch}_{date}  → scores + notes
+//   restaurant/inspections/photos/{id}           → one compressed photo per doc
+//   restaurant/inspections/actions/{id}          → corrective actions
+//   restaurant/inspections/config/sections      → editable sections/items (optional)
 const INSP_B={adala:'حي العدالة',furat:'مول الفرات'};
 const INSP_DN=['الأحد','الاثنين','الثلاثاء','الأربعاء','الخميس','الجمعة','السبت'];
+// [key, name, items, criticalIdx, branches]
 const INSP_S=[
-["c","المطبخ البارد",["نظافة الأسطح وأدوات التحضير","ترتيب المواد والمعدات في مناطق العمل","الالتزام بأصناف المواد الخام المعتمدة","طرق تحضير المواد النصف مصنّعة","تخزين الأغذية (حرارة / تبريد / تغليف)","سلامة الأدوات وعدم وجود صدأ أو تلف","الزي الرسمي (غطاء رأس، قفازات، مريول، حذاء)","خطة صيانة وقائية موثقة لمعدات التبريد"],[4,7]],
+["c","المطبخ البارد",["نظافة الأسطح وأدوات التحضير","ترتيب المواد والمعدات في مناطق العمل","الالتزام بأصناف المواد الخام المعتمدة","طرق تحضير المواد النصف مصنّعة","تخزين الأغذية (حرارة / تبريد / تغليف)","سلامة الأدوات وعدم وجود صدأ أو تلف","الزي الرسمي (غطاء رأس، قفازات، مريول، حذاء)","خطة صيانة وقائية موثقة لمعدات التبريد"],[4,7],["adala"]],
 ["h","المطبخ الساخن",["نظافة أسطح التحضير وأدوات الطبخ والقلايات والأفران","الالتزام بالمواد الخام المحددة للوصفات","طرق التحضير والتجهيز حسب Manual Book","ضبط درجات الحرارة أثناء الطهي","جودة التقديم والمظهر النهائي للأطباق","سلامة وصيانة معدات الطبخ","تطبيق تعليمات النظافة والسلامة الغذائية","جاهزية أدوات الإطفاء والسلامة العامة"],[3,6,7]],
 ["s","المستودعات",["نظافة وترتيب المستودع","تخزين المواد بشكل آمن ومرتب","وضوح التصنيفات والتواريخ","الالتزام بدرجات الحرارة المطلوبة","الصيانة العامة للمكان"],[3]],
 ["r","الاستقبال والكاشير",["مظهر ونظافة الكاونتر","تعامل الموظفين مع العملاء","سرعة تنفيذ الطلبات","تنظيم قائمة الطلبات والفواتير","الالتزام بالابتسامة واللباقة","جودة شاشات العرض وفاعليتها من بداية التشغيل"],[]],
+["l","الصالة",["نظافة الأرضية","نظافة الطاولات والجلسات","منطقة البراد والفريش","واجهة المطعم والجام","الدرج","الزرع"],[],["adala"]],
 ["p","الاستلام والتسليم الخارجي",["وضوح المسار وسهولة الحركة","نظافة النوافذ ونقاط التسليم","سرعة تجهيز وتسليم الطلبات","الالتزام بمعايير التغليف والنظافة","التعامل المهذب مع العملاء"],[]],
 ["g","الإدارة العامة والموظفون",["التزام الطاقم بالزي الرسمي","انضباط الموظفين ومواعيد الحضور","فعالية التواصل بين الإدارة والفريق","كفاءة مدير الفرع والمشرفين","متابعة التقارير الدورية والمخزون","تنفيذ الصيانة الدورية بانتظام","استجابة الإدارة لملاحظات الشركة الأم","مستوى رضا العملاء"],[]],
 ["u","الموارد البشرية",["ملفات الموظفين محدثة","الالتزام بنظام الدوام وسجلات الحضور","تطبيق التدريب المستمر للطاقم","التزام الإدارة بمعايير السلامة المهنية","نظام الحوافز والانضباط","استقرار الفريق وقلة الدوران الوظيفي","رضا الموظفين عن بيئة العمل"],[]],
 ["m","الصيانة والسلامة العامة",["كفاءة وحدات التبريد والتكييف","جودة الإنارة داخلية وخارجية","فحص وصيانة الطفايات وحقيبة الإسعافات","صيانة الأجهزة والمعدات","الالتزام بجداول الصيانة الوقائية"],[2,4]]
 ];
-const inspSecs=b=>INSP_S.filter(s=>b!=='furat'||s[0]!=='c');
+// Effective structure = saved config (if any) else defaults.
+// Tuple: [key,name,items,criticalIdx,branches,offIdx,hidden]
+let INSP_CFG=null,INSP_EFF=[];
+function inspBuild(){
+  const src=INSP_CFG||INSP_S.map(s=>({k:s[0],name:s[1],branches:s[4]||['adala','furat'],hidden:false,items:s[2].map((t,i)=>({t,off:false,crit:s[3].includes(i)}))}));
+  INSP_EFF=src.map(x=>[x.k,x.name,x.items.map(i=>i.t),x.items.map((i,n)=>i.crit?n:-1).filter(n=>n>=0),x.branches||['adala','furat'],x.items.map((i,n)=>i.off?n:-1).filter(n=>n>=0),!!x.hidden]);
+}
+inspBuild();
+const inspSecs=b=>INSP_EFF.filter(s=>!s[6]&&s[4].includes(b));
+
 const inspIso=d=>d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
 const inspPar=s=>{const[a,b,c]=s.split('-');return new Date(+a,+b-1,+c)};
 const inspAdd=(s,n)=>{const d=inspPar(s);d.setDate(d.getDate()+n);return inspIso(d)};
@@ -1784,39 +1811,61 @@ const inspC=(v,p,light)=>INSP_COL[light?'light':'dark'][inspCls(v,p)]||(light?'#
 const inspEsc=t=>String(t==null?'':t).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const inspMean=a=>{a=a.filter(x=>x!=null);return a.length?a.reduce((x,y)=>x+y,0)/a.length:null};
 const inspId=(b,d)=>b+'_'+d;
-const inspDaysRef=()=>db.collection('restaurant').doc('inspections').collection('days');
-const inspPhotosRef=()=>db.collection('restaurant').doc('inspections').collection('photos');
+const inspRoot=()=>db.collection('restaurant').doc('inspections');
+const inspDaysRef=()=>inspRoot().collection('days');
+const inspPhotosRef=()=>inspRoot().collection('photos');
+const inspActRef=()=>inspRoot().collection('actions');
+const inspCfgRef=()=>inspRoot().collection('config').doc('sections');
 window.__ip=window.__ip||{};
+Object.assign(S.insp,{actions:[],cfgOpen:false,cfgDraft:null,cmpOpen:false,cmp:null});
 function inspMyName(){
   const e=S.authUser?.email||'';
   return S.authUser?.displayName||(S.data?.managers||[]).find(m=>m.email===e)?.name||e.split('@')[0]||'';
 }
+function inspRe(){const y=window.scrollY;render();window.scrollTo(0,y);}
 
 function inspCalc(b,sc){
   let T=0,N=0;const per={};
   for(const s of inspSecs(b)){
     let t=0,n=0;
-    s[2].forEach((_,i)=>{const v=sc[s[0]+i];if(v!==undefined&&v!==''&&v!==null){t+=+v;n++}});
+    s[2].forEach((_,i)=>{
+      if(s[5].includes(i))return;
+      const v=sc[s[0]+i];
+      if(v!==undefined&&v!==''&&v!==null){t+=+v;n++}
+    });
     per[s[0]]=n?t/(n*10)*100:null;T+=t;N+=n;
   }
   return{tot:N?T/(N*10)*100:null,per};
 }
 
-// ── Navigation / loading ──
-function inspOpen(){
-  const I=S.insp;
-  I.date=TODAY;I.tab='day';I.rep=false;I.ready=false;I.err='';I.status='';
-  S.view='inspection';render();inspLoad();
+// ── Config (editable sections) ──
+let inspCfgP=null;
+function inspLoadCfg(force){
+  if(inspCfgP&&!force)return inspCfgP;
+  inspCfgP=(async()=>{
+    try{
+      const s=await inspCfgRef().get();
+      INSP_CFG=(s.exists&&s.data().secs&&s.data().secs.length)?s.data().secs:null;
+      inspBuild();
+    }catch(e){inspCfgP=null;console.warn('insp cfg',e);}
+  })();
+  return inspCfgP;
 }
-function inspBack(){inspFlush();S.insp.rep=false;S.view='home';render();}
-function inspNav(p){
-  inspFlush();
-  Object.assign(S.insp,p);
-  S.insp.ready=false;S.insp.err='';S.insp.status='';
-  render();inspLoad();
-}
-function inspStep(n){const I=S.insp;inspNav({date:inspAdd(I.date,I.tab==='wk'?7*n:n)});}
 
+// ── Fetch helpers ──
+async function inspFetchWeek(b,date,onlyCur){
+  const ws=inspWs(date),we=inspAdd(ws,6),pws=inspAdd(ws,-7);
+  const dates=[...Array(onlyCur?7:14).keys()].map(i=>inspAdd(onlyCur?ws:pws,i));
+  const snaps=await Promise.all(dates.map(d=>inspDaysRef().doc(inspId(b,d)).get()));
+  const docs=snaps.filter(s=>s.exists).map(s=>({...s.data(),date:s.data().date||s.id.split('_')[1]}));
+  return{ws,we,cur:docs.filter(x=>x.date>=ws&&x.date<=we),prev:docs.filter(x=>x.date<ws)};
+}
+const inspSortActs=a=>a.sort((x,y)=>(x.due||'9999').localeCompare(y.due||'9999'));
+async function inspFetchActions(b){
+  const s=await inspActRef().where('branch','==',b).get();
+  return inspSortActs(s.docs.map(d=>({id:d.id,...d.data()})));
+}
+const inspOver=a=>a.status!=='done'&&a.due&&a.due<TODAY;
 function inspGroupPhotos(snap){
   const m={};
   snap.forEach(doc=>{
@@ -1828,27 +1877,46 @@ function inspGroupPhotos(snap){
   return m;
 }
 
+// ── Navigation / loading ──
+const INSP_HOME={at:0,busy:false,data:null};
+function inspOpen(b){
+  const I=S.insp;
+  if(b)I.b=b;
+  I.date=TODAY;I.tab='day';I.rep=false;I.cfgOpen=false;I.cmpOpen=false;I.ready=false;I.err='';I.status='';
+  S.view='inspection';render();inspLoad();
+}
+function inspBack(){inspFlush();S.insp.rep=false;S.insp.cmpOpen=false;S.insp.cfgOpen=false;INSP_HOME.at=0;S.view='home';render();}
+function inspNav(p){
+  inspFlush();
+  Object.assign(S.insp,p);
+  S.insp.ready=false;S.insp.err='';S.insp.status='';
+  render();inspLoad();
+}
+function inspStep(n){const I=S.insp;inspNav({date:inspAdd(I.date,I.tab==='wk'?7*n:n)});}
+
 async function inspLoad(){
   const I=S.insp,tok=++I.tok;
   try{
+    await inspLoadCfg();
+    if(tok!==I.tok)return;
+    const actP=inspFetchActions(I.b);actP.catch(()=>{});
+    let day=null,wk=null;
     if(I.tab==='day'){
       const id=inspId(I.b,I.date);
-      const [snap,ps]=await Promise.all([
-        inspDaysRef().doc(id).get(),
-        inspPhotosRef().where('dayId','==',id).get()
-      ]);
-      if(tok!==I.tok)return;
-      const d=snap.exists?snap.data():{};
-      I.d={scores:d.scores||{},notes:d.notes||{}};
-      I.photos=inspGroupPhotos(ps);
-    }else{
-      const ws=inspWs(I.date),we=inspAdd(ws,6),pws=inspAdd(ws,-7);
-      const dates=[...Array(14).keys()].map(i=>inspAdd(pws,i));
-      const snaps=await Promise.all(dates.map(d=>inspDaysRef().doc(inspId(I.b,d)).get()));
-      if(tok!==I.tok)return;
-      const docs=snaps.filter(s=>s.exists).map(s=>({...s.data(),date:s.data().date||s.id.split('_')[1]}));
-      I.wk={ws,we,cur:docs.filter(x=>x.date>=ws&&x.date<=we),prev:docs.filter(x=>x.date<ws)};
+      const [snap,ps]=await Promise.all([inspDaysRef().doc(id).get(),inspPhotosRef().where('dayId','==',id).get()]);
+      day={snap,ps};
+    }else if(I.tab==='wk'){
+      wk=await inspFetchWeek(I.b,I.date);
     }
+    const acts=await actP;
+    if(tok!==I.tok)return;
+    if(day){
+      const d=day.snap.exists?day.snap.data():{};
+      I.d={scores:d.scores||{},notes:d.notes||{}};
+      I.photos=inspGroupPhotos(day.ps);
+    }
+    if(wk)I.wk=wk;
+    I.actions=acts;
     I.err='';I.ready=true;
   }catch(e){
     if(tok!==I.tok)return;
@@ -1923,10 +1991,13 @@ function inspPhotosH(sec){
     `<div class="ip"><img src="${p.data}" onclick="inspZoom('${p.id}')"/><button onclick="inspDelPhoto('${sec}','${p.id}')">✕</button></div>`
   ).join('');
 }
+function inspBadge(k){
+  const np=(S.insp.photos[k]||[]).length,na=(S.insp.actions||[]).filter(a=>a.sec===k&&a.status!=='done').length;
+  return(np?'📷 '+np:'')+(na?(np?' ':'')+'🔧 '+na:'');
+}
 function inspRePhotos(sec){
   const e=document.getElementById('insp-ph-'+sec);if(e)e.innerHTML=inspPhotosH(sec);
-  const c=document.getElementById('insp-pc-'+sec);
-  if(c){const n=(S.insp.photos[sec]||[]).length;c.textContent=n?'📷 '+n:'';}
+  const c=document.getElementById('insp-pc-'+sec);if(c)c.textContent=inspBadge(sec);
 }
 async function inspAddPhotos(sec,input){
   const files=[...input.files];input.value='';
@@ -1972,9 +2043,104 @@ function inspZoom(id){
   document.body.appendChild(o);
 }
 
-// ── Week model (shared by weekly tab + report) ──
-function inspWeekModel(){
-  const I=S.insp,w=I.wk,b=I.b;
+// ── Corrective actions ──
+function inspActCardH(a,full){
+  const od=inspOver(a),done=a.status==='done';
+  const btn='padding:7px 12px;border-radius:10px;font-size:12px;font-weight:700;font-family:inherit;';
+  return`<div style="background:${done?'var(--dark3)':od?'rgba(239,71,111,.1)':'rgba(255,159,28,.08)'};border:1px solid ${done?'var(--border)':od?'rgba(239,71,111,.45)':'rgba(255,159,28,.3)'};border-radius:12px;padding:10px 12px;margin-bottom:8px;${done?'opacity:.75':''}">
+    ${full?`<div style="font-size:11px;color:#888;margin-bottom:3px">${inspEsc(a.secName)}${a.item?' · '+inspEsc(a.item):''}</div>`:(a.item?`<div style="font-size:11px;color:#888;margin-bottom:3px">${inspEsc(a.item)}</div>`:'')}
+    <div style="font-size:13px;line-height:1.6">${inspEsc(a.desc).replace(/\n/g,'<br>')}</div>
+    <div style="display:flex;flex-wrap:wrap;gap:10px;font-size:11px;color:#888;margin-top:6px">
+      ${a.owner?`<span>👤 ${inspEsc(a.owner)}</span>`:''}
+      ${a.due?`<span style="${od?'color:#ff8da1;font-weight:700':''}">📅 ${a.due}${od?' (متأخر)':''}</span>`:''}
+      ${done&&a.doneAt?`<span>✅ ${inspIso(new Date(a.doneAt))}</span>`:''}
+      ${a.byName?`<span>✍ ${inspEsc(a.byName)}</span>`:''}
+    </div>
+    <div style="display:flex;gap:8px;margin-top:8px">
+      <button onclick="inspActToggle('${a.id}')" style="${btn}${done?'background:var(--dark4);color:#aaa':'background:rgba(6,214,160,.15);color:#06D6A0;border:1px solid rgba(6,214,160,.4)'}">${done?'↩ إعادة فتح':'✓ تم الإنجاز'}</button>
+      <button onclick="inspActDel('${a.id}')" style="${btn}background:rgba(200,16,46,.12);color:#ff6b81">🗑</button>
+    </div></div>`;
+}
+function inspActListH(k){
+  return(S.insp.actions||[]).filter(a=>a.sec===k&&a.status!=='done').map(a=>inspActCardH(a,false)).join('');
+}
+function inspReActs(sec){
+  const e=document.getElementById('insp-ac-'+sec);if(e)e.innerHTML=inspActListH(sec);
+  const c=document.getElementById('insp-pc-'+sec);if(c)c.textContent=inspBadge(sec);
+}
+function inspActRefresh(sec){if(S.insp.tab==='day')inspReActs(sec);else inspRe();}
+function inspActForm(sec){
+  const I=S.insp,s=inspSecs(I.b).find(x=>x[0]===sec);if(!s)return;
+  const old=document.getElementById('insp-af');if(old)old.remove();
+  const o=document.createElement('div');
+  o.id='insp-af';o.className='no-print';
+  o.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:9997;display:flex;align-items:flex-end;justify-content:center';
+  o.innerHTML=`<div style="background:var(--dark2);border-radius:24px 24px 0 0;padding:20px;width:100%;max-width:430px;max-height:90vh;overflow-y:auto;border-top:1px solid var(--border)">
+    <div style="font-weight:800;font-size:16px;margin-bottom:12px">🔧 إجراء تصحيحي – ${s[1]}</div>
+    <label class="lbl">البند (اختياري)</label>
+    <select id="iaf-item" class="inp" style="margin-bottom:10px"><option value="">— عام للقسم —</option>${s[2].map((t,i)=>s[5].includes(i)?'':`<option value="${i}">${inspEsc(t)}</option>`).join('')}</select>
+    <label class="lbl">الإجراء المطلوب</label>
+    <textarea id="iaf-desc" class="inp" style="min-height:70px;margin-bottom:10px" placeholder="ماذا يجب أن يُنفَّذ؟"></textarea>
+    <label class="lbl">المسؤول</label>
+    <input id="iaf-owner" class="inp" style="margin-bottom:10px" placeholder="اسم المسؤول"/>
+    <label class="lbl">الموعد النهائي</label>
+    <input id="iaf-due" type="date" class="inp" value="${inspAdd(TODAY,3)}" style="margin-bottom:14px"/>
+    <div style="display:flex;gap:8px"><button class="btn-red" onclick="inspActSave('${sec}')" style="flex:2">حفظ</button><button onclick="document.getElementById('insp-af').remove()" style="flex:1;padding:15px;border-radius:14px;background:var(--dark3);color:#aaa;font-weight:700;font-family:inherit">إلغاء</button></div></div>`;
+  o.addEventListener('click',e=>{if(e.target===o)o.remove();});
+  document.body.appendChild(o);
+}
+async function inspActSave(sec){
+  const I=S.insp,s=inspSecs(I.b).find(x=>x[0]===sec);if(!s)return;
+  const g=id=>document.getElementById(id);
+  const desc=g('iaf-desc').value.trim();
+  if(!desc)return toast$('اكتب الإجراء المطلوب','error');
+  const iv=g('iaf-item').value;
+  const a={branch:I.b,sec,secName:s[1],item:iv===''?'':s[2][+iv],itemIdx:iv===''?null:+iv,desc,owner:g('iaf-owner').value.trim(),due:g('iaf-due').value||'',status:'open',date:I.date,createdAt:Date.now(),by:S.authUser?.email||'',byName:inspMyName()};
+  try{
+    const ref=await inspActRef().add(a);
+    I.actions.push({id:ref.id,...a});inspSortActs(I.actions);
+    const f=g('insp-af');if(f)f.remove();
+    inspActRefresh(sec);toast$('✅ تمت إضافة الإجراء');
+  }catch(e){toast$('تعذّر الحفظ: '+((e&&e.message)||''),'error');}
+}
+async function inspActToggle(id){
+  const I=S.insp,a=I.actions.find(x=>x.id===id);if(!a)return;
+  const done=a.status!=='done';
+  const patch=done?{status:'done',doneAt:Date.now(),doneBy:S.authUser?.email||'',doneByName:inspMyName()}:{status:'open',doneAt:null,doneBy:'',doneByName:''};
+  try{
+    await inspActRef().doc(id).update(patch);
+    Object.assign(a,patch);inspActRefresh(a.sec);
+    toast$(done?'✅ تم إغلاق الإجراء':'أُعيد فتح الإجراء');
+  }catch(e){toast$('تعذّر التحديث','error');}
+}
+async function inspActDel(id){
+  if(!confirm('حذف هذا الإجراء نهائياً؟'))return;
+  const I=S.insp,a=I.actions.find(x=>x.id===id);
+  try{
+    await inspActRef().doc(id).delete();
+    I.actions=I.actions.filter(x=>x.id!==id);
+    if(a)inspActRefresh(a.sec);
+    toast$('تم حذف الإجراء');
+  }catch(e){toast$('تعذّر الحذف','error');}
+}
+function inspActTabH(){
+  const I=S.insp;
+  const open=I.actions.filter(a=>a.status!=='done'),od=open.filter(inspOver),rest=open.filter(a=>!inspOver(a));
+  const done=I.actions.filter(a=>a.status==='done').sort((a,b)=>(b.doneAt||0)-(a.doneAt||0)).slice(0,10);
+  let h=`<div class="card" style="margin-bottom:12px"><div style="font-size:12px;color:#888">${INSP_B[I.b]}</div>
+    <div style="font-size:30px;font-weight:900;color:${od.length?'#EF476F':open.length?'#FF9F1C':'#06D6A0'}">${open.length}</div>
+    <div style="font-size:12px;color:#666">إجراء مفتوح${od.length?` · <span style="color:#ff8da1">${od.length} متأخر</span>`:''}</div>
+    <div style="font-size:11px;color:#666;margin-top:6px">لإضافة إجراء: افتح اليوم ← القسم ← ➕ إضافة إجراء</div></div>`;
+  if(od.length)h+=`<div style="font-weight:800;color:#ff8da1;margin:6px 0 8px">⏰ متأخرة (${od.length})</div>`+od.map(a=>inspActCardH(a,true)).join('');
+  if(rest.length)h+=`<div style="font-weight:800;margin:10px 0 8px">🔧 مفتوحة (${rest.length})</div>`+rest.map(a=>inspActCardH(a,true)).join('');
+  if(!open.length)h+=`<div class="card" style="text-align:center;color:#06D6A0;margin-bottom:12px">✅ لا توجد إجراءات مفتوحة</div>`;
+  if(done.length)h+=`<details class="insp-sec" style="margin-top:12px"><summary><span>✅ أُغلقت مؤخراً (${done.length})</span><span style="color:#666;font-size:12px">▾</span></summary><div style="padding:12px 14px 4px">${done.map(a=>inspActCardH(a,true)).join('')}</div></details>`;
+  return h;
+}
+
+// ── Week model (shared by weekly tab, report, comparison, home) ──
+function inspWeekModel(b,w){
+  const I=S.insp;b=b||I.b;w=w||I.wk;
   const cs=w.cur.map(x=>inspCalc(b,x.scores||{}));
   const avg=inspMean(cs.map(x=>x.tot));
   const pav=inspMean(w.prev.map(x=>inspCalc(b,x.scores||{}).tot));
@@ -1986,11 +2152,12 @@ function inspWeekModel(){
   const secs=inspSecs(b).map(s=>({s,v:inspMean(cs.map(x=>x.per[s[0]]))}));
   const it=[];
   inspSecs(b).forEach(s=>s[2].forEach((t,i)=>{
+    if(s[5].includes(i))return;
     const v=inspMean(w.cur.map(x=>{const q=(x.scores||{})[s[0]+i];return q===undefined||q===''||q===null?null:+q}));
     const crit=s[3].includes(i);
     if(v!=null&&(v<=5||(crit&&v<8)))it.push([v,t,crit,s[1]]);
   }));
-  it.sort((a,b2)=>a[0]-b2[0]);
+  it.sort((p,q)=>p[0]-q[0]);
   return{avg,diff,n:w.cur.length,days,secs,it:it.slice(0,12),ws:w.ws,we:w.we};
 }
 
@@ -1998,18 +2165,22 @@ function inspWeekModel(){
 function renderInspection(){
   const I=S.insp;
   if(I.rep)return renderInspReport();
+  if(I.cmpOpen)return renderInspCmp();
+  if(I.cfgOpen)return renderInspCfg();
+  const nOpen=(I.actions||[]).filter(a=>a.status!=='done').length;
   const head=`
     <div class="row" style="margin-bottom:16px">
       <button class="back-btn" onclick="inspBack()">←</button>
       <div style="flex:1"><div style="font-weight:800;font-size:19px">📋 التقييم اليومي</div><div id="insp-status" style="font-size:11px;color:#666;margin-top:1px">${I.status||''}</div></div>
+      ${S.isSuperAdmin?`<button class="back-btn" onclick="inspCfgOpen()" title="إدارة البنود">⚙️</button>`:''}
     </div>
     <div class="tab-bar">${Object.keys(INSP_B).map(k=>`<button class="tab-btn ${I.b===k?'active':''}" onclick="inspNav({b:'${k}'})">${INSP_B[k]}</button>`).join('')}</div>
-    <div class="tab-bar">${[['day','اليوم'],['wk','الأسبوع']].map(t=>`<button class="tab-btn ${I.tab===t[0]?'active':''}" onclick="inspNav({tab:'${t[0]}'})">${t[1]}</button>`).join('')}</div>
-    <div class="row" style="margin-bottom:14px;gap:8px">
+    <div class="tab-bar">${[['day','اليوم'],['wk','الأسبوع'],['act','المتابعة'+(nOpen?' ('+nOpen+')':'')]].map(t=>`<button class="tab-btn ${I.tab===t[0]?'active':''}" onclick="inspNav({tab:'${t[0]}'})">${t[1]}</button>`).join('')}</div>
+    ${I.tab==='act'?'':`<div class="row" style="margin-bottom:14px;gap:8px">
       <button class="back-btn" onclick="inspStep(-1)">‹</button>
       <input type="date" class="inp" value="${I.date}" onchange="if(this.value)inspNav({date:this.value})" style="flex:1;text-align:center"/>
       <button class="back-btn" onclick="inspStep(1)">›</button>
-    </div>`;
+    </div>`}`;
   let body;
   if(I.err){
     const perm=/permission|insufficient/i.test(I.err);
@@ -2021,7 +2192,7 @@ function renderInspection(){
     </div>`;
   }else if(!I.ready){
     body=`<div style="padding:50px 0"><div class="spinner"></div></div>`;
-  }else body=I.tab==='day'?inspDayH():inspWeekH();
+  }else body=I.tab==='day'?inspDayH():I.tab==='wk'?inspWeekH():inspActTabH();
   return`<div class="page">${head}${body}</div>`;
 }
 
@@ -2032,19 +2203,20 @@ function inspDayH(){
     <div id="insp-tot" style="font-size:36px;font-weight:900;color:${inspC(c.tot,1)}">${inspFmt(c.tot)}</div>
     <div style="font-size:12px;color:#666">نتيجة اليوم من البنود التي قيّمتها</div></div>`;
   const secs=inspSecs(b).map(s=>{
-    const k=s[0],np=(I.photos[k]||[]).length;
+    const k=s[0];
     const items=s[2].map((t,i)=>{
+      if(s[5].includes(i))return'';
       const v=I.d.scores[k+i],crit=s[3].includes(i);
       return`<div class="insp-it">
-        <span style="flex:1;font-size:13px;line-height:1.6;${crit?'color:#FFB4A8':''}">${crit?'⚠ ':''}${t}</span>
+        <span style="flex:1;font-size:13px;line-height:1.6;${crit?'color:#FFB4A8':''}">${crit?'⚠ ':''}${inspEsc(t)}</span>
         <select class="insp-sel" style="${v==null?'':'color:'+inspC(+v)}" onchange="inspScore('${k}${i}',this)">
           <option value="">—</option>${[...Array(11).keys()].map(n=>`<option value="${n}" ${v!=null&&String(v)===String(n)?'selected':''}>${n}</option>`).join('')}
         </select></div>`;
     }).join('');
     return`<details class="insp-sec" ${I.open[k]?'open':''} ontoggle="S.insp.open['${k}']=this.open">
-      <summary><span>${s[1]}</span>
+      <summary><span>${inspEsc(s[1])}</span>
         <span style="display:flex;gap:10px;align-items:center">
-          <span id="insp-pc-${k}" style="font-size:11px;color:#888">${np?'📷 '+np:''}</span>
+          <span id="insp-pc-${k}" style="font-size:11px;color:#888">${inspBadge(k)}</span>
           <b id="insp-sp-${k}" style="color:${inspC(c.per[k],1)}">${inspFmt(c.per[k])}</b>
           <span style="color:#666;font-size:12px">▾</span>
         </span></summary>
@@ -2054,7 +2226,12 @@ function inspDayH(){
         <div id="insp-ph-${k}" class="insp-ph">${inspPhotosH(k)}</div>
         <label class="insp-add">📷 إضافة صورة<input type="file" accept="image/*" multiple style="display:none" onchange="inspAddPhotos('${k}',this)"/></label>
       </div>
-      <textarea class="inp" placeholder="ملاحظات القسم" oninput="S.insp.d.notes['${k}']=this.value;inspSave()" style="margin:10px 14px 14px;width:calc(100% - 28px);min-height:56px">${inspEsc(I.d.notes[k])}</textarea>
+      <div style="padding:12px 14px 2px;border-top:1px solid var(--border);margin-top:12px">
+        <div style="font-size:12px;color:#888;font-weight:700;margin-bottom:8px">🔧 إجراءات تصحيحية</div>
+        <div id="insp-ac-${k}">${inspActListH(k)}</div>
+        <button class="insp-add" onclick="inspActForm('${k}')" style="font-family:inherit">➕ إضافة إجراء</button>
+      </div>
+      <textarea class="inp" placeholder="ملاحظات القسم" oninput="S.insp.d.notes['${k}']=this.value;inspSave()" style="margin:12px 14px 14px;width:calc(100% - 28px);min-height:56px">${inspEsc(I.d.notes[k])}</textarea>
     </details>`;
   }).join('');
   return top+secs;
@@ -2063,22 +2240,26 @@ function inspDayH(){
 function inspWeekH(){
   const I=S.insp,m=inspWeekModel();
   const card=x=>`<div class="card" style="margin-bottom:12px">${x}</div>`;
-  const bar=(v)=>`<div style="height:7px;background:var(--dark3);border-radius:4px;overflow:hidden;margin-bottom:8px"><div style="height:100%;width:${v||0}%;background:${inspC(v,1)}"></div></div>`;
+  const bar=v=>`<div style="height:7px;background:var(--dark3);border-radius:4px;overflow:hidden;margin-bottom:8px"><div style="height:100%;width:${v||0}%;background:${inspC(v,1)}"></div></div>`;
+  const ao=I.actions.filter(a=>a.status!=='done'),aod=ao.filter(inspOver);
   let h=card(`<div style="font-size:12px;color:#888">${INSP_B[I.b]} – من ${m.ws} إلى ${m.we}</div>
     <div style="font-size:36px;font-weight:900;color:${inspC(m.avg,1)}">${inspFmt(m.avg)}</div>
     <div style="font-size:12px;color:#666">متوسط الأسبوع (${m.n} من 7 أيام مقيَّمة)${m.diff!=null?` – ${m.diff>=0?'▲':'▼'} ${Math.abs(m.diff)}% عن الأسبوع السابق`:''}</div>`);
-  h+=`<button onclick="inspOpenReport()" style="width:100%;margin-bottom:12px;padding:14px;background:linear-gradient(135deg,var(--red),var(--red2));border-radius:14px;color:#fff;font-size:15px;font-weight:800;font-family:inherit;box-shadow:0 6px 20px rgba(200,16,46,.35)">📄 سحب التقرير (مع الصور)</button>`;
+  h+=`<div style="display:flex;gap:8px;margin-bottom:12px">
+    <button onclick="inspOpenReport()" style="flex:1;padding:14px 6px;background:linear-gradient(135deg,var(--red),var(--red2));border-radius:14px;color:#fff;font-size:13px;font-weight:800;font-family:inherit;box-shadow:0 6px 20px rgba(200,16,46,.35)">📄 سحب التقرير</button>
+    <button onclick="inspOpenCmp()" style="flex:1;padding:14px 6px;background:var(--dark3);border:1px solid var(--border);border-radius:14px;color:#fff;font-size:13px;font-weight:800;font-family:inherit">⚖️ مقارنة الفرعين</button></div>`;
+  h+=`<div onclick="inspNav({tab:'act'})" class="card" style="margin-bottom:12px;cursor:pointer;display:flex;justify-content:space-between;align-items:center"><span>🔧 <b>${ao.length}</b> إجراء مفتوح${aod.length?` · <span style="color:#ff8da1">${aod.length} متأخر</span>`:''}</span><span style="color:#666">‹</span></div>`;
   h+=card(`<div style="font-weight:800;margin-bottom:6px">الأيام <span style="font-size:11px;color:#666;font-weight:400">(اضغط يوماً لفتحه)</span></div>`+
     m.days.map(r=>`<div onclick="inspNav({tab:'day',date:'${r.d}'})" style="display:flex;justify-content:space-between;padding:9px 0;border-top:1px solid var(--border);cursor:pointer"><span>${INSP_DN[inspPar(r.d).getDay()]} ${r.d.slice(5)}</span><b style="color:${inspC(r.t,1)}">${r.x?inspFmt(r.t):'<span style="color:#666;font-weight:400">لم يُقيَّم</span>'}</b></div>`).join(''));
   h+=card(`<div style="font-weight:800;margin-bottom:8px">متوسط الأقسام</div>`+
-    m.secs.map(r=>`<div style="display:flex;justify-content:space-between;padding:3px 0"><span>${r.s[1]}</span><b style="color:${inspC(r.v,1)}">${inspFmt(r.v)}</b></div>${bar(r.v)}`).join(''));
+    m.secs.map(r=>`<div style="display:flex;justify-content:space-between;padding:3px 0"><span>${inspEsc(r.s[1])}</span><b style="color:${inspC(r.v,1)}">${inspFmt(r.v)}</b></div>${bar(r.v)}`).join(''));
   h+=card(`<div style="font-weight:800;margin-bottom:8px">بنود تحتاج تدخلاً هذا الأسبوع</div>`+
-    (m.it.length?m.it.map(x=>`<div style="display:flex;justify-content:space-between;gap:8px;padding:6px 0;border-top:1px solid var(--border)"><span style="font-size:13px;${x[2]?'color:#FFB4A8;font-weight:700':''}">${x[2]?'⚠ ':''}${x[1]} <span style="color:#666;font-size:11px">(${x[3]})</span></span><b style="color:${inspC(x[0])}">${Math.round(x[0]*10)/10}</b></div>`).join(''):`<div style="font-size:13px;color:#666">لا توجد بنود ضعيفة، أو لم يُقيَّم شيء بعد.</div>`)+
+    (m.it.length?m.it.map(x=>`<div style="display:flex;justify-content:space-between;gap:8px;padding:6px 0;border-top:1px solid var(--border)"><span style="font-size:13px;${x[2]?'color:#FFB4A8;font-weight:700':''}">${x[2]?'⚠ ':''}${inspEsc(x[1])} <span style="color:#666;font-size:11px">(${inspEsc(x[3])})</span></span><b style="color:${inspC(x[0])}">${Math.round(x[0]*10)/10}</b></div>`).join(''):`<div style="font-size:13px;color:#666">لا توجد بنود ضعيفة، أو لم يُقيَّم شيء بعد.</div>`)+
     `<div style="font-size:11px;color:#666;margin-top:8px">⚠ = بند سلامة حرج (يظهر إذا كان متوسطه أقل من 8)</div>`);
   return h;
 }
 
-// ── Report (pull weekly report with photos) ──
+// ── Weekly report (with photos + open actions) ──
 async function inspOpenReport(){
   const I=S.insp;if(!I.wk)return;
   inspFlush();
@@ -2087,8 +2268,9 @@ async function inspOpenReport(){
   render();
   try{
     const days=[...Array(7).keys()].map(i=>inspAdd(I.wk.ws,i));
-    const snaps=await Promise.all(days.map(d=>inspPhotosRef().where('dayId','==',inspId(I.b,d)).get()));
+    const [acts,...snaps]=await Promise.all([inspFetchActions(I.b),...days.map(d=>inspPhotosRef().where('dayId','==',inspId(I.b,d)).get())]);
     if(rt!==I.rtok)return;
+    I.actions=acts;
     days.forEach((d,i)=>{I.repPhotos[d]=inspGroupPhotos(snaps[i]);});
   }catch(e){
     if(rt!==I.rtok)return;
@@ -2098,68 +2280,355 @@ async function inspOpenReport(){
   I.repLoading=false;
   if(S.view==='inspection'&&I.rep)render();
 }
+const inspRH=t=>`<div style="font-weight:800;font-size:15px;color:#1F4E79;margin:0 0 8px;border-bottom:2px solid #1F4E79;padding-bottom:4px">${t}</div>`;
+const inspRBlk=x=>`<div data-blk="1" style="margin-bottom:14px">${x}</div>`;
+const inspRWrap=out=>`<div style="direction:rtl;font-family:Cairo,'Segoe UI',Tahoma,Arial,sans-serif;color:#1b1f24;line-height:1.6;background:#fff">${out.join('')}</div>`;
 function inspReportH(forFile){
   const I=S.insp,b=I.b,m=inspWeekModel();
-  const col=(v,p)=>inspC(v,p,true);
-  const H=t=>`<div style="font-weight:800;font-size:15px;color:#1F4E79;margin:18px 0 8px;border-bottom:2px solid #1F4E79;padding-bottom:4px">${t}</div>`;
+  const col=(v,p)=>inspC(v,p,true),H=inspRH,blk=inspRBlk;
   const zoom=id=>forFile?'':`onclick="inspZoom('${id}')"`;
-  let h=`<div style="direction:rtl;font-family:Cairo,'Segoe UI',Tahoma,Arial,sans-serif;color:#1b1f24;line-height:1.6">
-    <div style="text-align:center;margin-bottom:10px">
+  const out=[];
+  out.push(blk(`<div style="text-align:center;margin-bottom:10px">
       <div style="font-size:20px;font-weight:900;color:#1F4E79">تقرير التقييم الأسبوعي – 99 Grill</div>
       <div style="font-size:13px;color:#667085">${INSP_B[b]} · من ${m.ws} إلى ${m.we}</div>
     </div>
     <div style="border:1px solid #dde1e7;border-radius:12px;padding:12px;text-align:center">
       <div style="font-size:38px;font-weight:900;color:${col(m.avg,1)}">${inspFmt(m.avg)}</div>
       <div style="font-size:12px;color:#667085">متوسط الأسبوع (${m.n} من 7 أيام مقيَّمة)${m.diff!=null?` – ${m.diff>=0?'▲':'▼'} ${Math.abs(m.diff)}% عن الأسبوع السابق`:''}</div>
-    </div>`;
-  h+=H('الأيام')+m.days.map(r=>`<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #eef0f3"><span>${INSP_DN[inspPar(r.d).getDay()]} ${r.d.slice(5)}</span><b style="color:${col(r.t,1)}">${r.x?inspFmt(r.t):'<span style="color:#98a2b3;font-weight:400">لم يُقيَّم</span>'}</b></div>`).join('');
-  h+=H('متوسط الأقسام')+m.secs.map(r=>`<div style="display:flex;justify-content:space-between;padding:3px 0"><span>${r.s[1]}</span><b style="color:${col(r.v,1)}">${inspFmt(r.v)}</b></div><div style="height:7px;background:#e8ebf0;border-radius:4px;overflow:hidden;margin-bottom:6px"><div style="height:100%;width:${r.v||0}%;background:${col(r.v,1)}"></div></div>`).join('');
-  h+=H('بنود تحتاج تدخلاً')+(m.it.length?m.it.map(x=>`<div style="display:flex;justify-content:space-between;gap:8px;padding:4px 0;border-bottom:1px solid #eef0f3"><span style="${x[2]?'color:#c0392b;font-weight:700':''}">${x[2]?'⚠ ':''}${x[1]} <span style="color:#667085;font-size:12px">(${x[3]})</span></span><b style="color:${col(x[0])}">${Math.round(x[0]*10)/10}</b></div>`).join(''):`<div style="color:#667085;font-size:13px">لا توجد بنود ضعيفة، أو لم يُقيَّم شيء بعد.</div>`);
-  // Notes + photos per section
-  let det='';
+    </div>`));
+  out.push(blk(H('الأيام')+m.days.map(r=>`<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #eef0f3"><span>${INSP_DN[inspPar(r.d).getDay()]} ${r.d.slice(5)}</span><b style="color:${col(r.t,1)}">${r.x?inspFmt(r.t):'<span style="color:#98a2b3;font-weight:400">لم يُقيَّم</span>'}</b></div>`).join('')));
+  out.push(blk(H('متوسط الأقسام')+m.secs.map(r=>`<div style="display:flex;justify-content:space-between;padding:3px 0"><span>${inspEsc(r.s[1])}</span><b style="color:${col(r.v,1)}">${inspFmt(r.v)}</b></div><div style="height:7px;background:#e8ebf0;border-radius:4px;overflow:hidden;margin-bottom:6px"><div style="height:100%;width:${r.v||0}%;background:${col(r.v,1)}"></div></div>`).join('')));
+  out.push(blk(H('بنود تحتاج تدخلاً')+(m.it.length?m.it.map(x=>`<div style="display:flex;justify-content:space-between;gap:8px;padding:4px 0;border-bottom:1px solid #eef0f3"><span style="${x[2]?'color:#c0392b;font-weight:700':''}">${x[2]?'⚠ ':''}${inspEsc(x[1])} <span style="color:#667085;font-size:12px">(${inspEsc(x[3])})</span></span><b style="color:${col(x[0])}">${Math.round(x[0]*10)/10}</b></div>`).join(''):`<div style="color:#667085;font-size:13px">لا توجد بنود ضعيفة، أو لم يُقيَّم شيء بعد.</div>`)));
+  // corrective actions
+  const acts=I.actions||[],openA=acts.filter(a=>a.status!=='done');
+  const doneW=acts.filter(a=>a.status==='done'&&a.doneAt&&inspIso(new Date(a.doneAt))>=m.ws&&inspIso(new Date(a.doneAt))<=m.we);
+  out.push(blk(H('إجراءات تصحيحية')+(openA.length?openA.slice(0,15).map(a=>{const od=inspOver(a);return`<div style="padding:6px 0;border-bottom:1px solid #eef0f3"><div style="font-size:12px;color:#667085">${inspEsc(a.secName)}${a.item?' · '+inspEsc(a.item):''}</div><div style="font-size:13px">${inspEsc(a.desc).replace(/\n/g,'<br>')}</div><div style="font-size:11px;color:${od?'#c0392b':'#667085'};${od?'font-weight:700':''}">${a.owner?'👤 '+inspEsc(a.owner)+'  ':''}${a.due?'📅 '+a.due+(od?' (متأخر)':''):''}</div></div>`}).join('')+(openA.length>15?`<div style="font-size:12px;color:#667085;margin-top:4px">… و${openA.length-15} إجراء آخر</div>`:''):`<div style="color:#1e7b34;font-size:13px">✅ لا توجد إجراءات مفتوحة.</div>`)+(doneW.length?`<div style="font-size:12px;color:#1e7b34;margin-top:6px">✅ أُنجز هذا الأسبوع: ${doneW.length}</div>`:'')));
+  // notes + photos: one block per (section, day)
+  const det=[];
   m.secs.forEach(r=>{
-    const k=r.s[0];
-    const rows=m.days.map(d=>{
+    const k=r.s[0];let firstRow=true;
+    m.days.forEach(d=>{
       const note=d.x&&d.x.notes?d.x.notes[k]:'';
       const ps=(I.repPhotos&&I.repPhotos[d.d]&&I.repPhotos[d.d][k])||[];
-      if(!note&&!ps.length)return'';
-      return`<div style="padding:8px 4px;border-bottom:1px dashed #dde1e7">
-        <div style="font-size:12px;color:#667085;font-weight:700">${INSP_DN[inspPar(d.d).getDay()]} ${d.d.slice(5)}</div>
-        ${note?`<div style="font-size:13px;margin:3px 0">${inspEsc(note).replace(/\n/g,'<br>')}</div>`:''}
-        ${ps.length?`<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">${ps.map(p=>`<img src="${p.data}" ${zoom(p.id)} style="width:calc(50% - 3px);aspect-ratio:4/3;object-fit:cover;border-radius:8px;border:1px solid #dde1e7;break-inside:avoid"/>`).join('')}</div>`:''}
-      </div>`;
-    }).join('');
-    if(!rows)return;
-    det+=`<div style="margin-bottom:14px;break-inside:avoid-page"><div style="display:flex;justify-content:space-between;font-weight:800;background:#f1f4f8;padding:6px 10px;border-radius:8px"><span>${r.s[1]}</span><span style="color:${col(r.v,1)}">${inspFmt(r.v)}</span></div>${rows}</div>`;
+      if(!note&&!ps.length)return;
+      const head=firstRow?`<div style="display:flex;justify-content:space-between;font-weight:800;background:#f1f4f8;padding:6px 10px;border-radius:8px;margin-bottom:2px"><span>${inspEsc(r.s[1])}</span><span style="color:${col(r.v,1)}">${inspFmt(r.v)}</span></div>`:'';
+      firstRow=false;
+      det.push(`<div data-blk="1" style="margin-bottom:2px">${det.length?'':H('ملاحظات وصور الأقسام')}${head}
+        <div style="padding:8px 4px;border-bottom:1px dashed #dde1e7">
+          <div style="font-size:12px;color:#667085;font-weight:700">${INSP_DN[inspPar(d.d).getDay()]} ${d.d.slice(5)}</div>
+          ${note?`<div style="font-size:13px;margin:3px 0">${inspEsc(note).replace(/\n/g,'<br>')}</div>`:''}
+          ${ps.length?`<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">${ps.map(p=>`<div ${zoom(p.id)} style="width:calc(50% - 3px);height:0;padding-bottom:37.5%;background:#f1f4f8 url('${p.data}') center/contain no-repeat;border-radius:8px;border:1px solid #dde1e7"></div>`).join('')}</div>`:''}
+        </div></div>`);
+    });
   });
-  h+=H('ملاحظات وصور الأقسام')+(det||`<div style="color:#667085;font-size:13px">لا توجد ملاحظات أو صور هذا الأسبوع.</div>`);
-  h+=`<div style="margin-top:18px;font-size:11px;color:#98a2b3;text-align:center">أُعدّ بواسطة ${inspEsc(inspMyName())} · ${TODAY}</div></div>`;
-  return h;
+  if(det.length)out.push(...det);
+  else out.push(blk(H('ملاحظات وصور الأقسام')+`<div style="color:#667085;font-size:13px">لا توجد ملاحظات أو صور هذا الأسبوع.</div>`));
+  out.push(`<div data-blk="1" style="margin-top:14px;font-size:11px;color:#98a2b3;text-align:center">أُعدّ بواسطة ${inspEsc(inspMyName())} · ${TODAY}</div>`);
+  return inspRWrap(out);
+}
+function inspPdfBar(kind,backJs,extra){
+  return`<div class="row no-print" style="margin-bottom:14px">
+      <button class="back-btn" onclick="${backJs}">←</button>
+      <div style="flex:1;font-weight:800;font-size:18px">${kind==='cmp'?'⚖️ مقارنة الفرعين':'📄 تقرير الأسبوع'}</div></div>
+    <div class="no-print" style="display:flex;gap:8px;margin-bottom:8px">
+      <button onclick="inspPdf('download','${kind}')" style="flex:1;padding:12px;border-radius:12px;background:var(--red);color:#fff;font-weight:800;font-size:13px;font-family:inherit">⬇ تنزيل PDF</button>
+      <button onclick="inspPdf('share','${kind}')" style="flex:1;padding:12px;border-radius:12px;background:var(--dark3);border:1px solid var(--border);color:#fff;font-weight:800;font-size:13px;font-family:inherit">📤 مشاركة PDF</button>
+    </div>
+    <button class="no-print" onclick="window.print()" style="width:100%;margin-bottom:14px;padding:9px;border-radius:10px;background:none;border:1px solid var(--border);color:#888;font-size:12px;font-family:inherit">🖨 طباعة (بديل)</button>${extra||''}`;
 }
 function renderInspReport(){
   const I=S.insp;
-  const bar=`<div class="row no-print" style="margin-bottom:14px">
-      <button class="back-btn" onclick="S.insp.rep=false;render()">←</button>
-      <div style="flex:1;font-weight:800;font-size:18px">📄 تقرير الأسبوع</div></div>
-    <div class="no-print" style="display:flex;gap:8px;margin-bottom:14px">
-      <button onclick="window.print()" style="flex:1;padding:12px;border-radius:12px;background:var(--red);color:#fff;font-weight:800;font-size:13px;font-family:inherit">🖨 طباعة / حفظ PDF</button>
-      <button onclick="inspDownloadReport()" style="flex:1;padding:12px;border-radius:12px;background:var(--dark3);border:1px solid var(--border);color:#fff;font-weight:800;font-size:13px;font-family:inherit">⬇ تنزيل الملف</button>
-    </div>
-    ${I.repErr?`<div class="no-print" style="background:rgba(239,71,111,.12);border:1px solid rgba(239,71,111,.4);border-radius:12px;padding:10px 12px;margin-bottom:12px;font-size:12px;color:#ff8da1">تعذّر تحميل الصور: ${inspEsc(I.repErr)} <button onclick="inspOpenReport()" style="color:#fff;text-decoration:underline;background:none;font-family:inherit">إعادة المحاولة</button></div>`:''}`;
+  const bar=inspPdfBar('rep',"S.insp.rep=false;render()",I.repErr?`<div class="no-print" style="background:rgba(239,71,111,.12);border:1px solid rgba(239,71,111,.4);border-radius:12px;padding:10px 12px;margin-bottom:12px;font-size:12px;color:#ff8da1">تعذّر تحميل الصور: ${inspEsc(I.repErr)} <button onclick="inspOpenReport()" style="color:#fff;text-decoration:underline;background:none;font-family:inherit">إعادة المحاولة</button></div>`:'');
   const body=I.repLoading
     ?`<div style="padding:50px 0"><div class="spinner"></div><div style="text-align:center;color:#888;font-size:13px;margin-top:12px">جاري تحميل الصور...</div></div>`
     :`<div class="insp-paper" style="background:#fff;border-radius:16px;padding:16px">${inspReportH(false)}</div>`;
   return`<div class="page">${bar}${body}</div>`;
 }
-function inspDownloadReport(){
+
+// ── Branch comparison ──
+async function inspOpenCmp(){
+  const I=S.insp;inspFlush();
+  I.cmpOpen=true;I.cmp={loading:true};
+  const rt=I.rtok=(I.rtok||0)+1;
+  render();
+  try{
+    const [wa,wf,aa,af]=await Promise.all([inspFetchWeek('adala',I.date),inspFetchWeek('furat',I.date),inspFetchActions('adala'),inspFetchActions('furat')]);
+    if(rt!==I.rtok)return;
+    I.cmp={ma:inspWeekModel('adala',wa),mf:inspWeekModel('furat',wf),aa,af,ws:wa.ws,we:wa.we};
+  }catch(e){
+    if(rt!==I.rtok)return;
+    I.cmp={err:(e&&e.message)||'خطأ'};
+  }
+  if(S.view==='inspection'&&I.cmpOpen)render();
+}
+function inspCmpH(){
+  const C=S.insp.cmp,col=(v,p)=>inspC(v,p,true),H=inspRH,blk=inspRBlk;
+  const openN=l=>l.filter(x=>x.status!=='done').length,odN=l=>l.filter(inspOver).length;
+  const card=(name,m,acts)=>`<div style="flex:1;border:1px solid #dde1e7;border-radius:12px;padding:10px;text-align:center"><div style="font-weight:800;color:#1F4E79">${name}</div><div style="font-size:30px;font-weight:900;color:${col(m.avg,1)}">${inspFmt(m.avg)}</div><div style="font-size:11px;color:#667085">${m.n}/7 أيام${m.diff!=null?` · ${m.diff>=0?'▲':'▼'} ${Math.abs(m.diff)}%`:''}</div><div style="font-size:11px;color:#667085;margin-top:2px">🔧 ${openN(acts)} مفتوح${odN(acts)?` (${odN(acts)} متأخر)`:''}</div></div>`;
+  const out=[];
+  out.push(blk(`<div style="text-align:center;margin-bottom:10px"><div style="font-size:20px;font-weight:900;color:#1F4E79">مقارنة الفرعين – 99 Grill</div><div style="font-size:13px;color:#667085">الأسبوع من ${C.ws} إلى ${C.we}</div></div>
+    <div style="display:flex;gap:8px">${card(INSP_B.adala,C.ma,C.aa)}${card(INSP_B.furat,C.mf,C.af)}</div>`));
+  const keys=[];[...C.ma.secs,...C.mf.secs].forEach(r=>{if(!keys.includes(r.s[0]))keys.push(r.s[0]);});
+  const cell=(r,other)=>{
+    if(!r)return`<span style="color:#98a2b3">—</span>`;
+    const better=r.v!=null&&other&&other.v!=null&&r.v-other.v>=1;
+    return`<b style="color:${col(r.v,1)}">${inspFmt(r.v)}${better?' ▲':''}</b>`;
+  };
+  out.push(blk(H('متوسط الأقسام')+`<div style="display:flex;padding:3px 0;font-size:12px;color:#667085"><span style="flex:1"></span><span style="width:84px;text-align:center">${INSP_B.adala}</span><span style="width:84px;text-align:center">${INSP_B.furat}</span></div>`+
+    keys.map(k=>{
+      const ra=C.ma.secs.find(r=>r.s[0]===k),rf=C.mf.secs.find(r=>r.s[0]===k);
+      return`<div style="display:flex;align-items:center;padding:5px 0;border-bottom:1px solid #eef0f3"><span style="flex:1">${inspEsc((ra||rf).s[1])}</span><span style="width:84px;text-align:center">${cell(ra,rf)}</span><span style="width:84px;text-align:center">${cell(rf,ra)}</span></div>`;
+    }).join('')+`<div style="font-size:11px;color:#98a2b3;margin-top:6px">▲ = الأعلى بفارق 1% أو أكثر · — = القسم غير مطبّق في الفرع</div>`));
+  const weak=(name,m)=>`<div style="margin-bottom:8px"><div style="font-weight:700;color:#1F4E79;margin-bottom:3px">${name}</div>${m.it.length?m.it.slice(0,5).map(x=>`<div style="display:flex;justify-content:space-between;gap:8px;font-size:12px;padding:2px 0"><span>${x[2]?'⚠ ':''}${inspEsc(x[1])}</span><b style="color:${col(x[0])}">${Math.round(x[0]*10)/10}</b></div>`).join(''):`<div style="font-size:12px;color:#667085">لا توجد بنود ضعيفة.</div>`}</div>`;
+  out.push(blk(H('أضعف البنود')+weak(INSP_B.adala,C.ma)+weak(INSP_B.furat,C.mf)));
+  out.push(`<div data-blk="1" style="margin-top:10px;font-size:11px;color:#98a2b3;text-align:center">أُعدّ بواسطة ${inspEsc(inspMyName())} · ${TODAY}</div>`);
+  return inspRWrap(out);
+}
+function renderInspCmp(){
+  const I=S.insp,C=I.cmp||{};
+  const ok=C&&!C.loading&&!C.err;
+  const bar=ok?inspPdfBar('cmp',"S.insp.cmpOpen=false;render()"):`<div class="row" style="margin-bottom:14px"><button class="back-btn" onclick="S.insp.cmpOpen=false;render()">←</button><div style="flex:1;font-weight:800;font-size:18px">⚖️ مقارنة الفرعين</div></div>`;
+  const body=C.loading?`<div style="padding:50px 0"><div class="spinner"></div></div>`
+    :C.err?`<div class="card" style="text-align:center">${inspEsc(C.err)}<br><button class="btn-red" style="margin-top:12px" onclick="inspOpenCmp()">🔄 إعادة المحاولة</button></div>`
+    :`<div class="insp-paper" style="background:#fff;border-radius:16px;padding:16px">${inspCmpH()}</div>`;
+  return`<div class="page">${bar}${body}</div>`;
+}
+
+// ── Section/item editor (super admin) ──
+function inspCfgOpen(){
   const I=S.insp;
-  const html='<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>تقرير 99 Grill</title><style>body{margin:0 auto;padding:16px;background:#fff;max-width:760px}@media print{body{padding:0}}</style></head><body>'+inspReportH(true)+'</body></html>';
-  const blob=new Blob([html],{type:'text/html'});
-  const a=document.createElement('a');
-  a.href=URL.createObjectURL(blob);
-  a.download='99grill-report-'+I.b+'-'+I.wk.ws+'.html';
-  document.body.appendChild(a);a.click();a.remove();
-  setTimeout(()=>URL.revokeObjectURL(a.href),5000);
+  I.cfgDraft=INSP_EFF.map(s=>({k:s[0],name:s[1],branches:[...s[4]],hidden:!!s[6],items:s[2].map((t,i)=>({t,off:s[5].includes(i),crit:s[3].includes(i)}))}));
+  I.cfgOpen=true;render();
+}
+function inspCfgClose(){S.insp.cfgOpen=false;S.insp.cfgDraft=null;render();}
+function inspCfgSet(si,f,v){S.insp.cfgDraft[si][f]=v;}
+function inspCfgItem(si,ii,v){S.insp.cfgDraft[si].items[ii].t=v;}
+function inspCfgTog(si,ii,f,el){const it=S.insp.cfgDraft[si].items[ii];it[f]=!it[f];el.classList.toggle('on',it[f]);}
+function inspCfgBr(si,b,el){const d=S.insp.cfgDraft[si],i=d.branches.indexOf(b);if(i>=0)d.branches.splice(i,1);else d.branches.push(b);el.classList.toggle('on',i<0);}
+function inspCfgHide(si,el){const d=S.insp.cfgDraft[si];d.hidden=!d.hidden;el.classList.toggle('on',d.hidden);}
+function inspCfgAddItem(si){
+  const inp=document.getElementById('cfg-new-'+si),t=inp.value.trim();if(!t)return;
+  S.insp.cfgDraft[si].items.push({t,off:false,crit:false});inspRe();
+}
+function inspCfgAddSec(){
+  const n=(prompt('اسم القسم الجديد؟')||'').trim();if(!n)return;
+  const d=S.insp.cfgDraft;let k;
+  do{k='x'+Math.random().toString(36).replace(/[^a-z]/g,'').slice(0,4);}while(k.length<3||d.some(s=>s.k===k));
+  d.push({k,name:n,branches:['adala','furat'],hidden:false,items:[]});
+  inspRe();setTimeout(()=>window.scrollTo(0,document.body.scrollHeight),50);
+}
+async function inspCfgSave(){
+  const I=S.insp,d=I.cfgDraft;
+  for(const s of d){
+    if(!s.name.trim())return toast$('يوجد قسم بدون اسم','error');
+    if(!s.hidden&&!s.branches.length)return toast$('القسم "'+s.name+'" غير مرتبط بأي فرع — اخترْ فرعاً أو أخفِه','error');
+    for(const it of s.items)if(!it.t.trim())return toast$('يوجد بند فارغ في "'+s.name+'"','error');
+  }
+  const secs=d.map(s=>({k:s.k,name:s.name.trim(),branches:s.branches,hidden:!!s.hidden,items:s.items.map(i=>({t:i.t.trim(),off:!!i.off,crit:!!i.crit}))}));
+  try{
+    await inspCfgRef().set({secs,updated:Date.now(),by:S.authUser?.email||''});
+    INSP_CFG=secs;inspBuild();inspCfgP=Promise.resolve();
+    I.cfgOpen=false;I.cfgDraft=null;
+    toast$('✅ تم حفظ الأقسام والبنود');
+    inspNav({});
+  }catch(e){toast$('تعذّر الحفظ: '+((e&&e.message)||''),'error');}
+}
+function renderInspCfg(){
+  const d=S.insp.cfgDraft||[];
+  const secs=d.map((s,si)=>`<div class="card" style="margin-bottom:12px">
+    <input class="inp" value="${inspEsc(s.name)}" oninput="inspCfgSet(${si},'name',this.value)" style="font-weight:800;margin-bottom:8px"/>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
+      ${Object.keys(INSP_B).map(b=>`<button class="tg ok ${s.branches.includes(b)?'on':''}" onclick="inspCfgBr(${si},'${b}',this)">${INSP_B[b]}</button>`).join('')}
+      <button class="tg ${s.hidden?'on':''}" onclick="inspCfgHide(${si},this)">إخفاء القسم</button>
+    </div>
+    ${s.items.map((it,ii)=>`<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px">
+      <input class="inp" value="${inspEsc(it.t)}" oninput="inspCfgItem(${si},${ii},this.value)" style="flex:1;padding:9px 10px;font-size:13px"/>
+      <button class="tg ${it.crit?'on':''}" onclick="inspCfgTog(${si},${ii},'crit',this)" title="بند حرج">⚠</button>
+      <button class="tg ${it.off?'on':''}" onclick="inspCfgTog(${si},${ii},'off',this)" title="إيقاف البند">إيقاف</button></div>`).join('')}
+    <div style="display:flex;gap:6px;margin-top:8px"><input id="cfg-new-${si}" class="inp" placeholder="بند جديد…" style="flex:1;padding:9px 10px;font-size:13px"/><button class="insp-add" onclick="inspCfgAddItem(${si})" style="font-family:inherit">➕</button></div></div>`).join('');
+  return`<div class="page">
+    <div class="row" style="margin-bottom:12px"><button class="back-btn" onclick="inspCfgClose()">←</button><div style="flex:1;font-weight:800;font-size:19px">⚙️ إدارة الأقسام والبنود</div></div>
+    <div style="background:rgba(255,159,28,.1);border:1px solid rgba(255,159,28,.35);border-radius:12px;padding:10px 12px;margin-bottom:14px;font-size:12px;line-height:1.7;color:#FFB86B">لا يمكن حذف بند أو قسم ولا تغيير ترتيبهما، حتى لا تختلط درجات الأيام السابقة. استخدم <b>إيقاف</b> للبند و<b>إخفاء</b> للقسم. البنود الجديدة تُضاف في النهاية. ⚠ = بند حرج.</div>
+    ${secs}
+    <button onclick="inspCfgAddSec()" class="insp-add" style="width:100%;justify-content:center;margin-bottom:14px;font-family:inherit">➕ قسم جديد</button>
+    <button class="btn-red" onclick="inspCfgSave()">💾 حفظ التغييرات</button></div>`;
+}
+
+// ── Home badge ──
+async function inspHomeLoad(){
+  if(INSP_HOME.busy)return;INSP_HOME.busy=true;
+  try{
+    await inspLoadCfg();
+    const res={};
+    await Promise.all(Object.keys(INSP_B).map(async b=>{
+      const [wk,acts]=await Promise.all([inspFetchWeek(b,TODAY,true),inspFetchActions(b)]);
+      res[b]={
+        avg:inspMean(wk.cur.map(x=>inspCalc(b,x.scores||{}).tot)),
+        n:wk.cur.length,
+        today:wk.cur.some(x=>x.date===TODAY&&Object.keys(x.scores||{}).length>0),
+        open:acts.filter(a=>a.status!=='done').length,
+        od:acts.filter(inspOver).length
+      };
+    }));
+    INSP_HOME.data=res;INSP_HOME.at=Date.now();
+    const el=document.getElementById('insp-home');if(el)el.innerHTML=inspHomeInner();
+  }catch(e){console.warn('insp home',e);}
+  finally{INSP_HOME.busy=false;}
+}
+function inspHomeMaybe(){if(Date.now()-INSP_HOME.at>120000)inspHomeLoad();}
+function inspHomeInner(){
+  const d=INSP_HOME.data;if(!d)return'';
+  return Object.keys(INSP_B).map(b=>{
+    const x=d[b];
+    return`<button onclick="inspOpen('${b}')" style="flex:1;background:var(--dark2);border:1px solid var(--border);border-radius:14px;padding:10px 8px;font-family:inherit;color:#fff;text-align:center">
+      <div style="font-size:11px;color:#888">${INSP_B[b]}</div>
+      <div style="font-size:22px;font-weight:900;color:${inspC(x.avg,1)}">${inspFmt(x.avg)}</div>
+      <div style="font-size:10px;color:${x.today?'#06D6A0':'#FF9F1C'};margin-top:1px">${x.today?'✅ قُيّم اليوم':'⏳ لم يُقيَّم اليوم'}</div>
+      ${x.open?`<div style="font-size:10px;margin-top:2px;color:${x.od?'#ff8da1':'#888'}">🔧 ${x.open} مفتوح${x.od?' · '+x.od+' متأخر':''}</div>`:''}
+    </button>`;
+  }).join('');
+}
+function inspHomeH(){return`<div id="insp-home" style="display:flex;gap:8px;margin-top:10px">${inspHomeInner()}</div>`;}
+
+// ── Backup / restore of inspection data ──
+async function inspBackup(withPhotos){
+  toast$('جاري تجهيز النسخة…','info');
+  try{
+    const [days,acts,cfg,ph]=await Promise.all([inspDaysRef().get(),inspActRef().get(),inspCfgRef().get(),withPhotos?inspPhotosRef().get():Promise.resolve(null)]);
+    const pack=s=>s.docs.map(d=>({id:d.id,data:d.data()}));
+    const out={type:'99grill-inspection-backup',version:1,date:new Date().toISOString(),withPhotos:!!withPhotos,days:pack(days),actions:pack(acts),config:cfg.exists?cfg.data():null,photos:ph?pack(ph):[]};
+    const blob=new Blob([JSON.stringify(out)],{type:'application/json'});
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);a.download='99grill-inspection-'+(withPhotos?'full-':'')+TODAY+'.json';
+    document.body.appendChild(a);a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(a.href),10000);
+    toast$('✅ '+out.days.length+' يوم · '+out.actions.length+' إجراء'+(withPhotos?' · '+out.photos.length+' صورة':''));
+  }catch(e){toast$('تعذّر النسخ الاحتياطي: '+((e&&e.message)||''),'error');}
+}
+function inspRestorePrompt(){
+  const input=document.createElement('input');
+  input.type='file';input.accept='.json,application/json';
+  input.onchange=ev=>{
+    const f=ev.target.files[0];if(!f)return;
+    const r=new FileReader();
+    r.onload=async e=>{
+      try{
+        const o=JSON.parse(e.target.result);
+        if(o.type!=='99grill-inspection-backup')return toast$('هذا ليس ملف نسخة التقييم اليومي','error');
+        const nd=(o.days||[]).length,na=(o.actions||[]).length,np=(o.photos||[]).length;
+        if(!confirm('استعادة نسخة التقييم اليومي؟\n\n• '+nd+' يوم\n• '+na+' إجراء\n• '+np+' صورة'+(o.config?'\n• إعدادات الأقسام':'')+'\n\nتُدمج مع الموجود (نفس اليوم يُستبدل بنسخته من الملف). لا يُحذف أي شيء آخر.'))return;
+        toast$('جاري الاستعادة…','info');
+        const writes=[...(o.days||[]).map(x=>[inspDaysRef().doc(x.id),x.data]),...(o.actions||[]).map(x=>[inspActRef().doc(x.id),x.data])];
+        for(let i=0;i<writes.length;i+=400){
+          const b=db.batch();writes.slice(i,i+400).forEach(w=>b.set(w[0],w[1]));await b.commit();
+        }
+        if(o.config&&o.config.secs){await inspCfgRef().set(o.config);INSP_CFG=o.config.secs;inspBuild();inspCfgP=Promise.resolve();}
+        let ok=0;const ph=o.photos||[];
+        for(let i=0;i<ph.length;i+=8){
+          const rs=await Promise.allSettled(ph.slice(i,i+8).map(x=>inspPhotosRef().doc(x.id).set(x.data)));
+          ok+=rs.filter(z=>z.status==='fulfilled').length;
+        }
+        INSP_HOME.at=0;
+        toast$('✅ تمت الاستعادة: '+nd+' يوم · '+na+' إجراء'+(np?' · '+ok+'/'+np+' صورة':''));
+      }catch(err){console.warn(err);toast$('خطأ في الاستعادة: '+((err&&err.message)||''),'error');}
+    };
+    r.readAsText(f);
+  };
+  input.click();
+}
+
+// ── Real PDF (html2canvas + jsPDF, loaded on demand) ──
+let inspLibP=null;
+function inspLoadLibs(){
+  if(window.html2canvas&&window.jspdf)return Promise.resolve();
+  if(inspLibP)return inspLibP;
+  const ld=src=>new Promise((res,rej)=>{
+    const s=document.createElement('script');s.src=src;s.onload=res;
+    s.onerror=()=>rej(new Error('تعذّر تحميل مكتبة PDF — تحقق من الإنترنت'));
+    document.head.appendChild(s);
+  });
+  inspLibP=Promise.all([
+    ld('https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js'),
+    ld('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js')
+  ]).catch(e=>{inspLibP=null;throw e;});
+  return inspLibP;
+}
+async function inspMakePdf(ov,html){
+  await inspLoadLibs();
+  if(document.fonts&&document.fonts.ready)await document.fonts.ready;
+  const msg=ov.querySelector('#insp-pdf-msg');
+  const host=document.createElement('div');
+  host.style.cssText='position:absolute;top:0;left:0;width:720px;background:#fff;z-index:9990';
+  host.innerHTML=html;
+  document.body.appendChild(host);
+  const sy=window.scrollY;window.scrollTo(0,0);
+  try{
+    const blks=[...host.querySelectorAll('[data-blk]')];
+    const {jsPDF}=window.jspdf;
+    const pdf=new jsPDF({orientation:'p',unit:'mm',format:'a4',compress:true});
+    const PW=210,PH=297,M=10,CW=PW-2*M,MAXH=PH-2*M;
+    let y=M;
+    for(let i=0;i<blks.length;i++){
+      if(msg)msg.textContent='جاري إنشاء PDF… '+(i+1)+' / '+blks.length;
+      const cv=await html2canvas(blks[i],{scale:2,backgroundColor:'#ffffff',useCORS:true,logging:false,windowWidth:760,scrollX:0,scrollY:0});
+      const h=cv.height/cv.width*CW;
+      if(h<=MAXH){
+        if(y+h>PH-M){pdf.addPage();y=M;}
+        pdf.addImage(cv.toDataURL('image/jpeg',0.88),'JPEG',M,y,CW,h);
+        y+=h+2;
+      }else{
+        if(y>M){pdf.addPage();y=M;}
+        const sliceH=Math.floor(MAXH/CW*cv.width);
+        let off=0;
+        while(off<cv.height){
+          const hh=Math.min(sliceH,cv.height-off);
+          const c2=document.createElement('canvas');c2.width=cv.width;c2.height=hh;
+          const ctx=c2.getContext('2d');ctx.fillStyle='#fff';ctx.fillRect(0,0,c2.width,hh);
+          ctx.drawImage(cv,0,off,cv.width,hh,0,0,cv.width,hh);
+          const mh=hh/cv.width*CW;
+          pdf.addImage(c2.toDataURL('image/jpeg',0.88),'JPEG',M,y,CW,mh);
+          off+=hh;y+=mh+2;
+          if(off<cv.height){pdf.addPage();y=M;}
+        }
+      }
+    }
+    return pdf.output('blob');
+  }finally{host.remove();window.scrollTo(0,sy);}
+}
+async function inspPdf(mode,kind){
+  const I=S.insp;
+  if(I.pdfBusy)return;
+  if(kind==='cmp'){if(!I.cmp||I.cmp.loading||I.cmp.err)return;}
+  else if(I.repLoading||!I.wk)return;
+  I.pdfBusy=true;
+  const ov=document.createElement('div');
+  ov.className='no-print';
+  ov.style.cssText='position:fixed;inset:0;background:#0f0f0f;z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;color:#fff';
+  ov.innerHTML='<div class="spinner"></div><div id="insp-pdf-msg" style="font-size:14px">جاري إنشاء PDF…</div>';
+  document.body.appendChild(ov);
+  try{
+    const html=kind==='cmp'?inspCmpH():inspReportH(true);
+    const blob=await inspMakePdf(ov,html);
+    const name=kind==='cmp'?'99grill-compare-'+I.cmp.ws+'.pdf':'99grill-'+I.b+'-'+I.wk.ws+'.pdf';
+    if(mode==='share'&&navigator.canShare){
+      const f=new File([blob],name,{type:'application/pdf'});
+      if(navigator.canShare({files:[f]})){
+        try{await navigator.share({files:[f],title:'تقرير 99 Grill'});}
+        catch(e){if(e&&e.name!=='AbortError')throw e;}
+        return;
+      }
+    }
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);a.download=name;
+    document.body.appendChild(a);a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(a.href),10000);
+    toast$(mode==='share'?'المشاركة غير مدعومة هنا — تم تنزيل الملف':'✅ تم إنشاء ملف PDF');
+  }catch(e){
+    console.warn('pdf err',e);
+    toast$('تعذّر إنشاء PDF: '+((e&&e.message)||''),'error');
+  }finally{
+    I.pdfBusy=false;ov.remove();
+  }
 }
 
 function render(){
@@ -2185,7 +2654,7 @@ function render(){
   }
   if(S.managerView&&S.isSuperAdmin){app.innerHTML=renderManagers();return;}
   switch(S.view){
-    case 'home':             app.innerHTML=renderHome();break;
+    case 'home':             app.innerHTML=renderHome();inspHomeMaybe();break;
     case 'manageCategories': app.innerHTML=renderManageCats();break;
     case 'allRatings':       app.innerHTML=renderAllRatings();break;
     case 'inspection':       app.innerHTML=renderInspection();break;
@@ -2221,5 +2690,6 @@ auth.onAuthStateChanged(async user=>{
 render();
 if('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(()=>{});
 </script>
+<div style="position:fixed;bottom:3px;left:6px;font-size:9px;color:#555;z-index:1;pointer-events:none">v6 · 26/10</div>
 </body>
 </html>
