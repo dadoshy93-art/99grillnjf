@@ -74,6 +74,27 @@ button{cursor:pointer;border:none;outline:none}
 /* Rating reviewer card */
 .reviewer-chip{display:flex;align-items:center;gap:8px;background:var(--dark3);border-radius:12px;padding:8px 12px;border:1px solid var(--border);margin-bottom:6px}
 .reviewer-avatar{width:32px;height:32px;border-radius:50%;background:var(--red)22;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:900;color:var(--red);flex-shrink:0;border:1.5px solid var(--red)44}
+
+/* ── Daily inspection ── */
+.insp-sec{background:var(--dark2);border:1px solid var(--border);border-radius:16px;margin-bottom:10px;overflow:hidden}
+.insp-sec summary{padding:14px 16px;font-weight:700;font-size:14px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;list-style:none}
+.insp-sec summary::-webkit-details-marker{display:none}
+.insp-sec[open] summary{border-bottom:1px solid var(--border)}
+.insp-it{padding:10px 14px;border-top:1px solid var(--border);display:flex;gap:10px;align-items:center}
+.insp-sec summary + .insp-it{border-top:none}
+.insp-sel{flex:0 0 72px;background:var(--dark3);border:1px solid var(--border);border-radius:10px;padding:8px 4px;font-weight:800;font-size:15px;text-align:center;color:var(--white);outline:none}
+.insp-ph{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+.ip{position:relative;width:78px;height:78px}
+.ip img{width:100%;height:100%;object-fit:cover;border-radius:12px;border:1px solid var(--border);cursor:zoom-in}
+.ip button{position:absolute;top:-6px;left:-6px;width:22px;height:22px;border-radius:50%;background:var(--red);color:#fff;font-size:11px;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,.5)}
+.insp-add{display:inline-flex;align-items:center;gap:6px;padding:9px 14px;border-radius:12px;background:rgba(200,16,46,.12);border:1px dashed rgba(200,16,46,.55);color:#ff6b81;font-size:13px;font-weight:700;cursor:pointer}
+@media print{
+  html,body,#app{background:#fff!important;color:#000!important}
+  .no-print,.toast{display:none!important}
+  .page{padding:0!important}
+  .insp-paper{border-radius:0!important;padding:0!important}
+  *{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+}
 </style>
 </head>
 <body>
@@ -200,6 +221,7 @@ const S = {
   leaveCalDate: TODAY,
   showLeaveHistory: false,
   showMoveEmpModal: false,
+  insp:{b:'adala',tab:'day',date:TODAY,d:{scores:{},notes:{}},photos:{},open:{},wk:null,ready:false,err:'',tok:0,status:'',rep:false,repLoading:false,repErr:'',repPhotos:{}},
   rankSortBy: 'overall',
   showCalReset: false,
   // salary access
@@ -341,7 +363,7 @@ function listenFirebase(){
       const mgr=(S.data.managers||[]).find(m=>m.email===S.authUser.email);
       S.canSeeSalary=S.isSuperAdmin||(mgr?.salaryAccess===true);
     }
-    if(S.authStep==='app') render();
+    if(S.authStep==='app'&&S.view!=='inspection') render();
   }, e=>console.warn('snapshot err',e));
 }
 
@@ -1162,6 +1184,7 @@ function renderHome(){
         <button onclick="S.ratingsTab='all';S.view='allRatings';render()" style="flex:1;background:linear-gradient(135deg,#FFD70018,#CC000018);border:1px solid #CC000033;border-radius:16px;padding:14px 12px;font-family:inherit;display:flex;align-items:center;gap:10px;color:#fff"><span style="font-size:24px">🏆</span><div style="text-align:right"><div style="font-weight:700;font-size:14px">التقييمات</div><div style="font-size:11px;color:#888;margin-top:1px">ترتيب الموظفين</div></div></button>
         <button onclick="S.catEditId=null;S.showAddCat=false;S.catForm={label:'',icon:'⭐',color:'#FFD700'};S.view='manageCategories';render()" style="flex:1;background:linear-gradient(135deg,#33333322,#CC000018);border:1px solid #33333366;border-radius:16px;padding:14px 12px;font-family:inherit;display:flex;align-items:center;gap:10px;color:#fff"><span style="font-size:24px">🗂</span><div style="text-align:right"><div style="font-weight:700;font-size:14px">أصناف التقييم</div><div style="font-size:11px;color:#888;margin-top:1px">إدارة وتخصيص</div></div></button>
       </div>
+      <button onclick="inspOpen()" style="width:100%;margin-top:10px;background:linear-gradient(135deg,#1F4E7933,#CC000018);border:1px solid #CC000033;border-radius:16px;padding:14px 12px;font-family:inherit;display:flex;align-items:center;gap:10px;color:#fff"><span style="font-size:24px">📋</span><div style="text-align:right"><div style="font-weight:700;font-size:14px">التقييم اليومي</div><div style="font-size:11px;color:#888;margin-top:1px">فحص الفروع + صور الأقسام + تقرير أسبوعي</div></div></button>
     </div>
     <div style="padding:20px 20px 100px">
       <!-- Tasks -->
@@ -1733,6 +1756,412 @@ function mountMoveEmpModal(){
     </div>`;
 }
 
+// ══════════════════ DAILY INSPECTION (التقييم اليومي) ══════════════════
+// Data lives in its own Firestore paths — it never touches restaurant/main:
+//   restaurant/inspections/days/{branch}_{date}   → scores + notes
+//   restaurant/inspections/photos/{autoId}        → one compressed photo per doc
+const INSP_B={adala:'حي العدالة',furat:'مول الفرات'};
+const INSP_DN=['الأحد','الاثنين','الثلاثاء','الأربعاء','الخميس','الجمعة','السبت'];
+const INSP_S=[
+["c","المطبخ البارد",["نظافة الأسطح وأدوات التحضير","ترتيب المواد والمعدات في مناطق العمل","الالتزام بأصناف المواد الخام المعتمدة","طرق تحضير المواد النصف مصنّعة","تخزين الأغذية (حرارة / تبريد / تغليف)","سلامة الأدوات وعدم وجود صدأ أو تلف","الزي الرسمي (غطاء رأس، قفازات، مريول، حذاء)","خطة صيانة وقائية موثقة لمعدات التبريد"],[4,7]],
+["h","المطبخ الساخن",["نظافة أسطح التحضير وأدوات الطبخ والقلايات والأفران","الالتزام بالمواد الخام المحددة للوصفات","طرق التحضير والتجهيز حسب Manual Book","ضبط درجات الحرارة أثناء الطهي","جودة التقديم والمظهر النهائي للأطباق","سلامة وصيانة معدات الطبخ","تطبيق تعليمات النظافة والسلامة الغذائية","جاهزية أدوات الإطفاء والسلامة العامة"],[3,6,7]],
+["s","المستودعات",["نظافة وترتيب المستودع","تخزين المواد بشكل آمن ومرتب","وضوح التصنيفات والتواريخ","الالتزام بدرجات الحرارة المطلوبة","الصيانة العامة للمكان"],[3]],
+["r","الاستقبال والكاشير",["مظهر ونظافة الكاونتر","تعامل الموظفين مع العملاء","سرعة تنفيذ الطلبات","تنظيم قائمة الطلبات والفواتير","الالتزام بالابتسامة واللباقة","جودة شاشات العرض وفاعليتها من بداية التشغيل"],[]],
+["p","الاستلام والتسليم الخارجي",["وضوح المسار وسهولة الحركة","نظافة النوافذ ونقاط التسليم","سرعة تجهيز وتسليم الطلبات","الالتزام بمعايير التغليف والنظافة","التعامل المهذب مع العملاء"],[]],
+["g","الإدارة العامة والموظفون",["التزام الطاقم بالزي الرسمي","انضباط الموظفين ومواعيد الحضور","فعالية التواصل بين الإدارة والفريق","كفاءة مدير الفرع والمشرفين","متابعة التقارير الدورية والمخزون","تنفيذ الصيانة الدورية بانتظام","استجابة الإدارة لملاحظات الشركة الأم","مستوى رضا العملاء"],[]],
+["u","الموارد البشرية",["ملفات الموظفين محدثة","الالتزام بنظام الدوام وسجلات الحضور","تطبيق التدريب المستمر للطاقم","التزام الإدارة بمعايير السلامة المهنية","نظام الحوافز والانضباط","استقرار الفريق وقلة الدوران الوظيفي","رضا الموظفين عن بيئة العمل"],[]],
+["m","الصيانة والسلامة العامة",["كفاءة وحدات التبريد والتكييف","جودة الإنارة داخلية وخارجية","فحص وصيانة الطفايات وحقيبة الإسعافات","صيانة الأجهزة والمعدات","الالتزام بجداول الصيانة الوقائية"],[2,4]]
+];
+const inspSecs=b=>INSP_S.filter(s=>b!=='furat'||s[0]!=='c');
+const inspIso=d=>d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+const inspPar=s=>{const[a,b,c]=s.split('-');return new Date(+a,+b-1,+c)};
+const inspAdd=(s,n)=>{const d=inspPar(s);d.setDate(d.getDate()+n);return inspIso(d)};
+const inspWs=s=>inspAdd(s,-((inspPar(s).getDay()+1)%7)); // week starts Saturday
+const inspFmt=v=>v==null?'—':Math.round(v*10)/10+'%';
+const inspCls=(v,p)=>v==null?'':(p?(v<60?'r':v<80?'a':'g'):(v<=5?'r':v<=7?'a':'g'));
+const INSP_COL={dark:{r:'#EF476F',a:'#FF9F1C',g:'#06D6A0'},light:{r:'#c0392b',a:'#b26b00',g:'#1e7b34'}};
+const inspC=(v,p,light)=>INSP_COL[light?'light':'dark'][inspCls(v,p)]||(light?'#667085':'#888');
+const inspEsc=t=>String(t==null?'':t).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const inspMean=a=>{a=a.filter(x=>x!=null);return a.length?a.reduce((x,y)=>x+y,0)/a.length:null};
+const inspId=(b,d)=>b+'_'+d;
+const inspDaysRef=()=>db.collection('restaurant').doc('inspections').collection('days');
+const inspPhotosRef=()=>db.collection('restaurant').doc('inspections').collection('photos');
+window.__ip=window.__ip||{};
+function inspMyName(){
+  const e=S.authUser?.email||'';
+  return S.authUser?.displayName||(S.data?.managers||[]).find(m=>m.email===e)?.name||e.split('@')[0]||'';
+}
+
+function inspCalc(b,sc){
+  let T=0,N=0;const per={};
+  for(const s of inspSecs(b)){
+    let t=0,n=0;
+    s[2].forEach((_,i)=>{const v=sc[s[0]+i];if(v!==undefined&&v!==''&&v!==null){t+=+v;n++}});
+    per[s[0]]=n?t/(n*10)*100:null;T+=t;N+=n;
+  }
+  return{tot:N?T/(N*10)*100:null,per};
+}
+
+// ── Navigation / loading ──
+function inspOpen(){
+  const I=S.insp;
+  I.date=TODAY;I.tab='day';I.rep=false;I.ready=false;I.err='';I.status='';
+  S.view='inspection';render();inspLoad();
+}
+function inspBack(){inspFlush();S.insp.rep=false;S.view='home';render();}
+function inspNav(p){
+  inspFlush();
+  Object.assign(S.insp,p);
+  S.insp.ready=false;S.insp.err='';S.insp.status='';
+  render();inspLoad();
+}
+function inspStep(n){const I=S.insp;inspNav({date:inspAdd(I.date,I.tab==='wk'?7*n:n)});}
+
+function inspGroupPhotos(snap){
+  const m={};
+  snap.forEach(doc=>{
+    const x=doc.data();
+    window.__ip[doc.id]=x.data;
+    (m[x.sec]=m[x.sec]||[]).push({id:doc.id,data:x.data,by:x.byName||'',at:x.at||0});
+  });
+  Object.values(m).forEach(a=>a.sort((p,q)=>p.at-q.at));
+  return m;
+}
+
+async function inspLoad(){
+  const I=S.insp,tok=++I.tok;
+  try{
+    if(I.tab==='day'){
+      const id=inspId(I.b,I.date);
+      const [snap,ps]=await Promise.all([
+        inspDaysRef().doc(id).get(),
+        inspPhotosRef().where('dayId','==',id).get()
+      ]);
+      if(tok!==I.tok)return;
+      const d=snap.exists?snap.data():{};
+      I.d={scores:d.scores||{},notes:d.notes||{}};
+      I.photos=inspGroupPhotos(ps);
+    }else{
+      const ws=inspWs(I.date),we=inspAdd(ws,6),pws=inspAdd(ws,-7);
+      const dates=[...Array(14).keys()].map(i=>inspAdd(pws,i));
+      const snaps=await Promise.all(dates.map(d=>inspDaysRef().doc(inspId(I.b,d)).get()));
+      if(tok!==I.tok)return;
+      const docs=snaps.filter(s=>s.exists).map(s=>({...s.data(),date:s.data().date||s.id.split('_')[1]}));
+      I.wk={ws,we,cur:docs.filter(x=>x.date>=ws&&x.date<=we),prev:docs.filter(x=>x.date<ws)};
+    }
+    I.err='';I.ready=true;
+  }catch(e){
+    if(tok!==I.tok)return;
+    console.warn('insp load err',e);
+    I.err=(e&&e.message)||'خطأ غير معروف';I.ready=false;
+  }
+  if(S.view==='inspection')render();
+}
+
+// ── Saving (scores + notes) ──
+let inspTm=null,inspPending=null;
+function inspStatus(){const el=document.getElementById('insp-status');if(el)el.textContent=S.insp.status||'';}
+function inspSave(){
+  const I=S.insp;
+  inspPending={id:inspId(I.b,I.date),b:I.b,date:I.date,scores:I.d.scores,notes:I.d.notes};
+  I.status='جارٍ الحفظ…';inspStatus();
+  clearTimeout(inspTm);inspTm=setTimeout(inspFlush,600);
+}
+async function inspFlush(){
+  clearTimeout(inspTm);
+  const p=inspPending;if(!p)return;
+  inspPending=null;
+  try{
+    await inspDaysRef().doc(p.id).set({branch:p.b,date:p.date,scores:p.scores,notes:p.notes,updated:Date.now(),by:S.authUser?.email||''});
+    S.insp.status='تم الحفظ ✓';
+  }catch(e){
+    console.warn('insp save err',e);
+    S.insp.status='تعذّر الحفظ';
+    toast$('تعذّر حفظ التقييم: '+((e&&e.message)||''),'error');
+  }
+  inspStatus();
+}
+function inspScore(k,el){
+  const I=S.insp;
+  if(el.value==='')delete I.d.scores[k];else I.d.scores[k]=+el.value;
+  el.style.color=el.value===''?'':inspC(+el.value);
+  const c=inspCalc(I.b,I.d.scores);
+  const t=document.getElementById('insp-tot');
+  if(t){t.textContent=inspFmt(c.tot);t.style.color=inspC(c.tot,1);}
+  inspSecs(I.b).forEach(s=>{
+    const e=document.getElementById('insp-sp-'+s[0]);
+    if(e){e.textContent=inspFmt(c.per[s[0]]);e.style.color=inspC(c.per[s[0]],1);}
+  });
+  inspSave();
+}
+
+// ── Photos ──
+function inspCompress(file,max){
+  max=max||900;
+  return new Promise((res,rej)=>{
+    const r=new FileReader();
+    r.onerror=()=>rej(new Error('تعذّرت قراءة الملف'));
+    r.onload=e=>{
+      const img=new Image();
+      img.onerror=()=>rej(new Error('ملف الصورة غير صالح'));
+      img.onload=()=>{
+        const k=Math.min(1,max/Math.max(img.width,img.height));
+        const w=Math.round(img.width*k),h=Math.round(img.height*k);
+        const cv=document.createElement('canvas');cv.width=w;cv.height=h;
+        cv.getContext('2d').drawImage(img,0,0,w,h);
+        let q=0.62,out=cv.toDataURL('image/jpeg',q);
+        while(out.length>400000&&q>0.3){q-=0.1;out=cv.toDataURL('image/jpeg',q);}
+        res(out);
+      };
+      img.src=e.target.result;
+    };
+    r.readAsDataURL(file);
+  });
+}
+function inspPhotosH(sec){
+  return(S.insp.photos[sec]||[]).map(p=>
+    `<div class="ip"><img src="${p.data}" onclick="inspZoom('${p.id}')"/><button onclick="inspDelPhoto('${sec}','${p.id}')">✕</button></div>`
+  ).join('');
+}
+function inspRePhotos(sec){
+  const e=document.getElementById('insp-ph-'+sec);if(e)e.innerHTML=inspPhotosH(sec);
+  const c=document.getElementById('insp-pc-'+sec);
+  if(c){const n=(S.insp.photos[sec]||[]).length;c.textContent=n?'📷 '+n:'';}
+}
+async function inspAddPhotos(sec,input){
+  const files=[...input.files];input.value='';
+  if(!files.length)return;
+  const I=S.insp,dayId=inspId(I.b,I.date),b=I.b,date=I.date;
+  toast$('جاري معالجة الصور...','info');
+  let n=0;
+  for(const f of files){
+    try{
+      const data=await inspCompress(f);
+      const doc={dayId,branch:b,date,sec,data,at:Date.now(),by:S.authUser?.email||'',byName:inspMyName()};
+      const ref=await inspPhotosRef().add(doc);
+      window.__ip[ref.id]=data;
+      if(S.insp.b===b&&S.insp.date===date&&S.insp.tab==='day'){
+        (S.insp.photos[sec]=S.insp.photos[sec]||[]).push({id:ref.id,data,by:doc.byName,at:doc.at});
+        inspRePhotos(sec);
+      }
+      n++;
+    }catch(e){
+      console.warn('insp photo err',e);
+      toast$('تعذّر حفظ صورة: '+((e&&e.message)||''),'error');
+    }
+  }
+  if(n)toast$('✅ تمت إضافة '+n+' صورة');
+}
+async function inspDelPhoto(sec,pid){
+  if(!confirm('حذف هذه الصورة نهائياً؟'))return;
+  try{
+    await inspPhotosRef().doc(pid).delete();
+    S.insp.photos[sec]=(S.insp.photos[sec]||[]).filter(p=>p.id!==pid);
+    delete window.__ip[pid];
+    inspRePhotos(sec);
+    toast$('تم حذف الصورة');
+  }catch(e){toast$('تعذّر حذف الصورة','error');}
+}
+function inspZoom(id){
+  const src=window.__ip[id];if(!src)return;
+  const o=document.createElement('div');
+  o.className='no-print';
+  o.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.93);z-index:9998;display:flex;align-items:center;justify-content:center;padding:12px';
+  o.innerHTML='<img src="'+src+'" style="max-width:100%;max-height:100%;border-radius:10px"/>';
+  o.onclick=()=>o.remove();
+  document.body.appendChild(o);
+}
+
+// ── Week model (shared by weekly tab + report) ──
+function inspWeekModel(){
+  const I=S.insp,w=I.wk,b=I.b;
+  const cs=w.cur.map(x=>inspCalc(b,x.scores||{}));
+  const avg=inspMean(cs.map(x=>x.tot));
+  const pav=inspMean(w.prev.map(x=>inspCalc(b,x.scores||{}).tot));
+  const diff=avg!=null&&pav!=null?Math.round((avg-pav)*10)/10:null;
+  const days=[...Array(7).keys()].map(i=>{
+    const d=inspAdd(w.ws,i),x=w.cur.find(y=>y.date===d);
+    return{d,x,t:x?inspCalc(b,x.scores||{}).tot:null};
+  });
+  const secs=inspSecs(b).map(s=>({s,v:inspMean(cs.map(x=>x.per[s[0]]))}));
+  const it=[];
+  inspSecs(b).forEach(s=>s[2].forEach((t,i)=>{
+    const v=inspMean(w.cur.map(x=>{const q=(x.scores||{})[s[0]+i];return q===undefined||q===''||q===null?null:+q}));
+    const crit=s[3].includes(i);
+    if(v!=null&&(v<=5||(crit&&v<8)))it.push([v,t,crit,s[1]]);
+  }));
+  it.sort((a,b2)=>a[0]-b2[0]);
+  return{avg,diff,n:w.cur.length,days,secs,it:it.slice(0,12),ws:w.ws,we:w.we};
+}
+
+// ── Views ──
+function renderInspection(){
+  const I=S.insp;
+  if(I.rep)return renderInspReport();
+  const head=`
+    <div class="row" style="margin-bottom:16px">
+      <button class="back-btn" onclick="inspBack()">←</button>
+      <div style="flex:1"><div style="font-weight:800;font-size:19px">📋 التقييم اليومي</div><div id="insp-status" style="font-size:11px;color:#666;margin-top:1px">${I.status||''}</div></div>
+    </div>
+    <div class="tab-bar">${Object.keys(INSP_B).map(k=>`<button class="tab-btn ${I.b===k?'active':''}" onclick="inspNav({b:'${k}'})">${INSP_B[k]}</button>`).join('')}</div>
+    <div class="tab-bar">${[['day','اليوم'],['wk','الأسبوع']].map(t=>`<button class="tab-btn ${I.tab===t[0]?'active':''}" onclick="inspNav({tab:'${t[0]}'})">${t[1]}</button>`).join('')}</div>
+    <div class="row" style="margin-bottom:14px;gap:8px">
+      <button class="back-btn" onclick="inspStep(-1)">‹</button>
+      <input type="date" class="inp" value="${I.date}" onchange="if(this.value)inspNav({date:this.value})" style="flex:1;text-align:center"/>
+      <button class="back-btn" onclick="inspStep(1)">›</button>
+    </div>`;
+  let body;
+  if(I.err){
+    const perm=/permission|insufficient/i.test(I.err);
+    body=`<div class="card" style="text-align:center;padding:24px 16px">
+      <div style="font-size:36px;margin-bottom:8px">📡</div>
+      <div style="font-weight:800;margin-bottom:6px">تعذّر تحميل التقييم</div>
+      <div style="font-size:12px;color:#888;line-height:1.7;margin-bottom:14px">${perm?'يبدو أن قواعد Firestore لا تسمح بالوصول لهذا المسار. تأكد أن القواعد تسمح بالقراءة والكتابة للمستخدمين المسجّلين.':inspEsc(I.err)}</div>
+      <button class="btn-red" onclick="inspNav({})">🔄 إعادة المحاولة</button>
+    </div>`;
+  }else if(!I.ready){
+    body=`<div style="padding:50px 0"><div class="spinner"></div></div>`;
+  }else body=I.tab==='day'?inspDayH():inspWeekH();
+  return`<div class="page">${head}${body}</div>`;
+}
+
+function inspDayH(){
+  const I=S.insp,b=I.b,c=inspCalc(b,I.d.scores);
+  const top=`<div class="card" style="margin-bottom:12px">
+    <div style="font-size:12px;color:#888">${INSP_DN[inspPar(I.date).getDay()]} – ${INSP_B[b]}</div>
+    <div id="insp-tot" style="font-size:36px;font-weight:900;color:${inspC(c.tot,1)}">${inspFmt(c.tot)}</div>
+    <div style="font-size:12px;color:#666">نتيجة اليوم من البنود التي قيّمتها</div></div>`;
+  const secs=inspSecs(b).map(s=>{
+    const k=s[0],np=(I.photos[k]||[]).length;
+    const items=s[2].map((t,i)=>{
+      const v=I.d.scores[k+i],crit=s[3].includes(i);
+      return`<div class="insp-it">
+        <span style="flex:1;font-size:13px;line-height:1.6;${crit?'color:#FFB4A8':''}">${crit?'⚠ ':''}${t}</span>
+        <select class="insp-sel" style="${v==null?'':'color:'+inspC(+v)}" onchange="inspScore('${k}${i}',this)">
+          <option value="">—</option>${[...Array(11).keys()].map(n=>`<option value="${n}" ${v!=null&&String(v)===String(n)?'selected':''}>${n}</option>`).join('')}
+        </select></div>`;
+    }).join('');
+    return`<details class="insp-sec" ${I.open[k]?'open':''} ontoggle="S.insp.open['${k}']=this.open">
+      <summary><span>${s[1]}</span>
+        <span style="display:flex;gap:10px;align-items:center">
+          <span id="insp-pc-${k}" style="font-size:11px;color:#888">${np?'📷 '+np:''}</span>
+          <b id="insp-sp-${k}" style="color:${inspC(c.per[k],1)}">${inspFmt(c.per[k])}</b>
+          <span style="color:#666;font-size:12px">▾</span>
+        </span></summary>
+      ${items}
+      <div style="padding:12px 14px 2px;border-top:1px solid var(--border)">
+        <div style="font-size:12px;color:#888;font-weight:700;margin-bottom:8px">📷 صور القسم</div>
+        <div id="insp-ph-${k}" class="insp-ph">${inspPhotosH(k)}</div>
+        <label class="insp-add">📷 إضافة صورة<input type="file" accept="image/*" multiple style="display:none" onchange="inspAddPhotos('${k}',this)"/></label>
+      </div>
+      <textarea class="inp" placeholder="ملاحظات القسم" oninput="S.insp.d.notes['${k}']=this.value;inspSave()" style="margin:10px 14px 14px;width:calc(100% - 28px);min-height:56px">${inspEsc(I.d.notes[k])}</textarea>
+    </details>`;
+  }).join('');
+  return top+secs;
+}
+
+function inspWeekH(){
+  const I=S.insp,m=inspWeekModel();
+  const card=x=>`<div class="card" style="margin-bottom:12px">${x}</div>`;
+  const bar=(v)=>`<div style="height:7px;background:var(--dark3);border-radius:4px;overflow:hidden;margin-bottom:8px"><div style="height:100%;width:${v||0}%;background:${inspC(v,1)}"></div></div>`;
+  let h=card(`<div style="font-size:12px;color:#888">${INSP_B[I.b]} – من ${m.ws} إلى ${m.we}</div>
+    <div style="font-size:36px;font-weight:900;color:${inspC(m.avg,1)}">${inspFmt(m.avg)}</div>
+    <div style="font-size:12px;color:#666">متوسط الأسبوع (${m.n} من 7 أيام مقيَّمة)${m.diff!=null?` – ${m.diff>=0?'▲':'▼'} ${Math.abs(m.diff)}% عن الأسبوع السابق`:''}</div>`);
+  h+=`<button onclick="inspOpenReport()" style="width:100%;margin-bottom:12px;padding:14px;background:linear-gradient(135deg,var(--red),var(--red2));border-radius:14px;color:#fff;font-size:15px;font-weight:800;font-family:inherit;box-shadow:0 6px 20px rgba(200,16,46,.35)">📄 سحب التقرير (مع الصور)</button>`;
+  h+=card(`<div style="font-weight:800;margin-bottom:6px">الأيام <span style="font-size:11px;color:#666;font-weight:400">(اضغط يوماً لفتحه)</span></div>`+
+    m.days.map(r=>`<div onclick="inspNav({tab:'day',date:'${r.d}'})" style="display:flex;justify-content:space-between;padding:9px 0;border-top:1px solid var(--border);cursor:pointer"><span>${INSP_DN[inspPar(r.d).getDay()]} ${r.d.slice(5)}</span><b style="color:${inspC(r.t,1)}">${r.x?inspFmt(r.t):'<span style="color:#666;font-weight:400">لم يُقيَّم</span>'}</b></div>`).join(''));
+  h+=card(`<div style="font-weight:800;margin-bottom:8px">متوسط الأقسام</div>`+
+    m.secs.map(r=>`<div style="display:flex;justify-content:space-between;padding:3px 0"><span>${r.s[1]}</span><b style="color:${inspC(r.v,1)}">${inspFmt(r.v)}</b></div>${bar(r.v)}`).join(''));
+  h+=card(`<div style="font-weight:800;margin-bottom:8px">بنود تحتاج تدخلاً هذا الأسبوع</div>`+
+    (m.it.length?m.it.map(x=>`<div style="display:flex;justify-content:space-between;gap:8px;padding:6px 0;border-top:1px solid var(--border)"><span style="font-size:13px;${x[2]?'color:#FFB4A8;font-weight:700':''}">${x[2]?'⚠ ':''}${x[1]} <span style="color:#666;font-size:11px">(${x[3]})</span></span><b style="color:${inspC(x[0])}">${Math.round(x[0]*10)/10}</b></div>`).join(''):`<div style="font-size:13px;color:#666">لا توجد بنود ضعيفة، أو لم يُقيَّم شيء بعد.</div>`)+
+    `<div style="font-size:11px;color:#666;margin-top:8px">⚠ = بند سلامة حرج (يظهر إذا كان متوسطه أقل من 8)</div>`);
+  return h;
+}
+
+// ── Report (pull weekly report with photos) ──
+async function inspOpenReport(){
+  const I=S.insp;if(!I.wk)return;
+  inspFlush();
+  I.rep=true;I.repLoading=true;I.repErr='';I.repPhotos={};
+  const rt=I.rtok=(I.rtok||0)+1;
+  render();
+  try{
+    const days=[...Array(7).keys()].map(i=>inspAdd(I.wk.ws,i));
+    const snaps=await Promise.all(days.map(d=>inspPhotosRef().where('dayId','==',inspId(I.b,d)).get()));
+    if(rt!==I.rtok)return;
+    days.forEach((d,i)=>{I.repPhotos[d]=inspGroupPhotos(snaps[i]);});
+  }catch(e){
+    if(rt!==I.rtok)return;
+    console.warn('insp report err',e);
+    I.repErr=(e&&e.message)||'خطأ';
+  }
+  I.repLoading=false;
+  if(S.view==='inspection'&&I.rep)render();
+}
+function inspReportH(forFile){
+  const I=S.insp,b=I.b,m=inspWeekModel();
+  const col=(v,p)=>inspC(v,p,true);
+  const H=t=>`<div style="font-weight:800;font-size:15px;color:#1F4E79;margin:18px 0 8px;border-bottom:2px solid #1F4E79;padding-bottom:4px">${t}</div>`;
+  const zoom=id=>forFile?'':`onclick="inspZoom('${id}')"`;
+  let h=`<div style="direction:rtl;font-family:Cairo,'Segoe UI',Tahoma,Arial,sans-serif;color:#1b1f24;line-height:1.6">
+    <div style="text-align:center;margin-bottom:10px">
+      <div style="font-size:20px;font-weight:900;color:#1F4E79">تقرير التقييم الأسبوعي – 99 Grill</div>
+      <div style="font-size:13px;color:#667085">${INSP_B[b]} · من ${m.ws} إلى ${m.we}</div>
+    </div>
+    <div style="border:1px solid #dde1e7;border-radius:12px;padding:12px;text-align:center">
+      <div style="font-size:38px;font-weight:900;color:${col(m.avg,1)}">${inspFmt(m.avg)}</div>
+      <div style="font-size:12px;color:#667085">متوسط الأسبوع (${m.n} من 7 أيام مقيَّمة)${m.diff!=null?` – ${m.diff>=0?'▲':'▼'} ${Math.abs(m.diff)}% عن الأسبوع السابق`:''}</div>
+    </div>`;
+  h+=H('الأيام')+m.days.map(r=>`<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #eef0f3"><span>${INSP_DN[inspPar(r.d).getDay()]} ${r.d.slice(5)}</span><b style="color:${col(r.t,1)}">${r.x?inspFmt(r.t):'<span style="color:#98a2b3;font-weight:400">لم يُقيَّم</span>'}</b></div>`).join('');
+  h+=H('متوسط الأقسام')+m.secs.map(r=>`<div style="display:flex;justify-content:space-between;padding:3px 0"><span>${r.s[1]}</span><b style="color:${col(r.v,1)}">${inspFmt(r.v)}</b></div><div style="height:7px;background:#e8ebf0;border-radius:4px;overflow:hidden;margin-bottom:6px"><div style="height:100%;width:${r.v||0}%;background:${col(r.v,1)}"></div></div>`).join('');
+  h+=H('بنود تحتاج تدخلاً')+(m.it.length?m.it.map(x=>`<div style="display:flex;justify-content:space-between;gap:8px;padding:4px 0;border-bottom:1px solid #eef0f3"><span style="${x[2]?'color:#c0392b;font-weight:700':''}">${x[2]?'⚠ ':''}${x[1]} <span style="color:#667085;font-size:12px">(${x[3]})</span></span><b style="color:${col(x[0])}">${Math.round(x[0]*10)/10}</b></div>`).join(''):`<div style="color:#667085;font-size:13px">لا توجد بنود ضعيفة، أو لم يُقيَّم شيء بعد.</div>`);
+  // Notes + photos per section
+  let det='';
+  m.secs.forEach(r=>{
+    const k=r.s[0];
+    const rows=m.days.map(d=>{
+      const note=d.x&&d.x.notes?d.x.notes[k]:'';
+      const ps=(I.repPhotos&&I.repPhotos[d.d]&&I.repPhotos[d.d][k])||[];
+      if(!note&&!ps.length)return'';
+      return`<div style="padding:8px 4px;border-bottom:1px dashed #dde1e7">
+        <div style="font-size:12px;color:#667085;font-weight:700">${INSP_DN[inspPar(d.d).getDay()]} ${d.d.slice(5)}</div>
+        ${note?`<div style="font-size:13px;margin:3px 0">${inspEsc(note).replace(/\n/g,'<br>')}</div>`:''}
+        ${ps.length?`<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">${ps.map(p=>`<img src="${p.data}" ${zoom(p.id)} style="width:calc(50% - 3px);aspect-ratio:4/3;object-fit:cover;border-radius:8px;border:1px solid #dde1e7;break-inside:avoid"/>`).join('')}</div>`:''}
+      </div>`;
+    }).join('');
+    if(!rows)return;
+    det+=`<div style="margin-bottom:14px;break-inside:avoid-page"><div style="display:flex;justify-content:space-between;font-weight:800;background:#f1f4f8;padding:6px 10px;border-radius:8px"><span>${r.s[1]}</span><span style="color:${col(r.v,1)}">${inspFmt(r.v)}</span></div>${rows}</div>`;
+  });
+  h+=H('ملاحظات وصور الأقسام')+(det||`<div style="color:#667085;font-size:13px">لا توجد ملاحظات أو صور هذا الأسبوع.</div>`);
+  h+=`<div style="margin-top:18px;font-size:11px;color:#98a2b3;text-align:center">أُعدّ بواسطة ${inspEsc(inspMyName())} · ${TODAY}</div></div>`;
+  return h;
+}
+function renderInspReport(){
+  const I=S.insp;
+  const bar=`<div class="row no-print" style="margin-bottom:14px">
+      <button class="back-btn" onclick="S.insp.rep=false;render()">←</button>
+      <div style="flex:1;font-weight:800;font-size:18px">📄 تقرير الأسبوع</div></div>
+    <div class="no-print" style="display:flex;gap:8px;margin-bottom:14px">
+      <button onclick="window.print()" style="flex:1;padding:12px;border-radius:12px;background:var(--red);color:#fff;font-weight:800;font-size:13px;font-family:inherit">🖨 طباعة / حفظ PDF</button>
+      <button onclick="inspDownloadReport()" style="flex:1;padding:12px;border-radius:12px;background:var(--dark3);border:1px solid var(--border);color:#fff;font-weight:800;font-size:13px;font-family:inherit">⬇ تنزيل الملف</button>
+    </div>
+    ${I.repErr?`<div class="no-print" style="background:rgba(239,71,111,.12);border:1px solid rgba(239,71,111,.4);border-radius:12px;padding:10px 12px;margin-bottom:12px;font-size:12px;color:#ff8da1">تعذّر تحميل الصور: ${inspEsc(I.repErr)} <button onclick="inspOpenReport()" style="color:#fff;text-decoration:underline;background:none;font-family:inherit">إعادة المحاولة</button></div>`:''}`;
+  const body=I.repLoading
+    ?`<div style="padding:50px 0"><div class="spinner"></div><div style="text-align:center;color:#888;font-size:13px;margin-top:12px">جاري تحميل الصور...</div></div>`
+    :`<div class="insp-paper" style="background:#fff;border-radius:16px;padding:16px">${inspReportH(false)}</div>`;
+  return`<div class="page">${bar}${body}</div>`;
+}
+function inspDownloadReport(){
+  const I=S.insp;
+  const html='<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>تقرير 99 Grill</title><style>body{margin:0 auto;padding:16px;background:#fff;max-width:760px}@media print{body{padding:0}}</style></head><body>'+inspReportH(true)+'</body></html>';
+  const blob=new Blob([html],{type:'text/html'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download='99grill-report-'+I.b+'-'+I.wk.ws+'.html';
+  document.body.appendChild(a);a.click();a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href),5000);
+}
+
 function render(){
   const app=document.getElementById('app'); if(!app)return;
   window.scrollTo(0,0);
@@ -1759,6 +2188,7 @@ function render(){
     case 'home':             app.innerHTML=renderHome();break;
     case 'manageCategories': app.innerHTML=renderManageCats();break;
     case 'allRatings':       app.innerHTML=renderAllRatings();break;
+    case 'inspection':       app.innerHTML=renderInspection();break;
     case 'location':         app.innerHTML=renderLocation();break;
     case 'employeeDetail':   app.innerHTML=renderEmpDetail();break;
     case 'addEmployee':
